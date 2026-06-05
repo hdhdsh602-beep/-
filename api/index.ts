@@ -249,7 +249,7 @@ Respond strictly with a single JSON object. Do not include markdown code block c
       // Default: Gemini AI (best quality)
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -378,7 +378,7 @@ Respond strictly with a single JSON object. Do not include markdown code block c
     } else {
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -494,7 +494,7 @@ Respond strictly with a single JSON object. Do not include markdown code block c
     } else {
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -585,7 +585,7 @@ Respond strictly with a single JSON object. Do not include markdown code block c
     } else {
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -656,7 +656,7 @@ Provide a friendly, highly professional response in Arabic, and include clearly 
       });
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: contents,
         config: {
           systemInstruction: systemInstruction,
@@ -746,7 +746,7 @@ Respond strictly with a JSON object. Do not include markdown headers or code blo
     } else {
       const ai = getAiClient();
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json",
