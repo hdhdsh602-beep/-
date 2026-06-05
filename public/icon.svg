@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Circular background with subtle radial gradient -->
+  <defs>
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="50%" fx="30%" fy="30%">
+      <stop offset="0%" stop-color="#fcfcfb" />
+      <stop offset="100%" stop-color="#f3f4ee" />
+    </radialGradient>
+    <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8a9a5b" />
+      <stop offset="100%" stop-color="#6e7c45" />
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c5d3a2" />
+      <stop offset="100%" stop-color="#a3b47c" />
+    </linearGradient>
+    <filter id="subtleShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <drop-shadow dx="0" dy="12" stdDeviation="16" flood-color="#556535" flood-opacity="0.12" />
+    </filter>
+  </defs>
+
+  <!-- Base Outer Circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#bgGrad)" stroke="#e4e6dc" stroke-width="6" />
+
+  <!-- Stylized Smart Lens Frame -->
+  <g filter="url(#subtleShadow)">
+    <!-- Outer glass frame -->
+    <rect x="116" y="156" width="280" height="200" rx="60" fill="none" stroke="url(#brandGrad)" stroke-width="20" stroke-linecap="round" stroke-linejoin="round" />
+    
+    <!-- Left lens (Eye / Objective) -->
+    <circle cx="206" cy="256" r="50" fill="none" stroke="url(#brandGrad)" stroke-width="12" />
+    <circle cx="206" cy="256" r="20" fill="url(#brandGrad)" />
+    
+    <!-- Right lens (Bilingual translation wave / smart sensor) -->
+    <circle cx="306" cy="256" r="50" fill="none" stroke="url(#accentGrad)" stroke-width="12" />
+    
+    <!-- Inner scanning dot -->
+    <circle cx="306" cy="256" r="14" fill="#8a9a5b" class="pulse" />
+    
+    <!-- Elegant bridge matching glasses -->
+    <path d="M 236 236 Q 256 220 276 236" fill="none" stroke="url(#brandGrad)" stroke-width="12" stroke-linecap="round" />
+
+    <!-- Scanner light bar representing real-time detection -->
+    <line x1="80" y1="210" x2="432" y2="210" stroke="#8a9a5b" stroke-width="4" stroke-linecap="round" stroke-dasharray="8 12" opacity="0.6" />
+    
+    <!-- Target corners in top-left and bottom-right -->
+    <path d="M 126 126 L 156 126 M 126 126 L 126 156" fill="none" stroke="#8a9a5b" stroke-width="10" stroke-linecap="round" />
+    <path d="M 386 386 L 356 386 M 386 386 L 386 356" fill="none" stroke="#8a9a5b" stroke-width="10" stroke-linecap="round" />
+  </g>
+</svg>

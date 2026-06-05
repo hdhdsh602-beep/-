@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" }
+      },
+      "required": ["id", "email"]
+    },
+    "Vocabulary": {
+      "title": "Vocabulary",
+      "description": "Vocabulary items.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "english": { "type": "string" },
+        "arabic": { "type": "string" },
+        "category": { "type": "string" }
+      },
+      "required": ["id", "english", "arabic"]
+    },
+    "SessionRecord": {
+      "title": "SessionRecord",
+      "description": "Historical session records.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "identifiedWords": { "type": "array" }
+      },
+      "required": ["id", "userId", "date"]
+    },
+    "ConversationMessage": {
+      "title": "ConversationMessage",
+      "description": "Automatically saved conversation messages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "sender": { "type": "string" },
+        "originalText": { "type": "string" },
+        "translatedText": { "type": "string" },
+        "phonetics": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "savedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "sender", "originalText", "translatedText", "savedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile data."
+    },
+    "/vocabulary/{wordId}": {
+      "schema": "Vocabulary",
+      "description": "Vocabulary database."
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "SessionRecord",
+      "description": "User session history."
+    },
+    "/users/{userId}/conversation_history/{msgId}": {
+      "schema": "ConversationMessage",
+      "description": "Automatically saved live face-to-face chat translations."
+    }
+  }
+}

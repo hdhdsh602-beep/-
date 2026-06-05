@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+    
+    function isOwner(userId) { 
+      return isSignedIn() && request.auth.uid == userId; 
+    }
+
+    // Default global catch-all deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User document path
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) 
+        && request.resource.data.id == userId
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 128
+        && request.resource.data.streak is int
+        && request.resource.data.streak > 0;
+      allow update: if isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() <= 128
+        && request.resource.data.streak is int;
+      allow delete: if false; // Profiles cannot be deleted over standard operations
+
+      // Subcollection: Saved Words
+      match /saved_words/{wordId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && isValidId(wordId)
+          && request.resource.data.id == wordId
+          && request.resource.data.english is string && request.resource.data.english.size() <= 200
+          && request.resource.data.arabic is string && request.resource.data.arabic.size() <= 200
+          && request.resource.data.phonetics is string && request.resource.data.phonetics.size() <= 100
+          && request.resource.data.category is string && request.resource.data.category.size() <= 100;
+        allow delete: if isOwner(userId) && isValidId(wordId);
+      }
+
+      // Subcollection: Sessions
+      match /sessions/{sessionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(sessionId)
+          && request.resource.data.id == sessionId
+          && request.resource.data.userId == userId
+          && request.resource.data.identifiedWordsCount is int
+          && request.resource.data.durationSeconds is int;
+        allow update, delete: if false; // Sessions are immutable
+      }
+
+      // Subcollection: Conversation History
+      match /conversation_history/{msgId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(msgId)
+          && request.resource.data.id == msgId
+          && request.resource.data.userId == userId
+          && request.resource.data.sender is string
+          && request.resource.data.originalText is string && request.resource.data.originalText.size() <= 2000
+          && request.resource.data.translatedText is string && request.resource.data.translatedText.size() <= 2000
+          && request.resource.data.savedAt is string;
+        allow update, delete: if isOwner(userId) && isValidId(msgId);
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "LinguaCam",
+  "description": "A real-time object identification language learning app using camera-based tracking for Arabic-to-English vocabulary practice.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
