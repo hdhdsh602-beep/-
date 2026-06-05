@@ -103,6 +103,40 @@ async function queryOllama(prompt: string, schema: any | null): Promise<string> 
   }
 }
 
+// Free translation using LibreTranslate (open source, no API key needed)
+async function libreTranslate(text: string, source: string = "en", target: string = "ar"): Promise<string> {
+  try {
+    const response = await fetch("https://libretranslate.com/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: text, source, target, format: "text" }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error(`LibreTranslate returned ${response.status}`);
+    const data: any = await response.json();
+    return data.translatedText || text;
+  } catch (e) {
+    console.warn("LibreTranslate failed, using fallback...", e);
+    throw e;
+  }
+}
+
+// Free translation using MyMemory API (1000 words/day free)
+async function myMemoryTranslate(text: string, source: string = "en", target: string = "ar"): Promise<string> {
+  try {
+    const response = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${source}|${target}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!response.ok) throw new Error(`MyMemory returned ${response.status}`);
+    const data: any = await response.json();
+    return data.responseData?.translatedText || text;
+  } catch (e) {
+    console.warn("MyMemory failed, using fallback...", e);
+    throw e;
+  }
+}
+
 // Real-time Translate API
 app.post("/api/translate", async (req, res) => {
   try {
@@ -188,10 +222,31 @@ Respond strictly with a single JSON object. Do not include markdown code block c
     }
 
     let parsedJson;
-    if (provider === "ollama") {
+
+    // Free translation providers (LibreTranslate, MyMemory) - simple text translation only
+    if (provider === "libre") {
+      const translatedText = await libreTranslate(trimmedText);
+      parsedJson = {
+        title: "ترجمة حرة",
+        english: trimmedText,
+        arabic: translatedText,
+        category: "ترجمة عامة",
+        phonetics: ""
+      };
+    } else if (provider === "mymemory") {
+      const translatedText = await myMemoryTranslate(trimmedText);
+      parsedJson = {
+        title: "ترجمة سريعة",
+        english: trimmedText,
+        arabic: translatedText,
+        category: "ترجمة عامة",
+        phonetics: ""
+      };
+    } else if (provider === "ollama") {
       const responseText = await queryOllama(prompt, schemaConfig);
       parsedJson = JSON.parse(cleanOllamaJson(responseText));
     } else {
+      // Default: Gemini AI (best quality)
       const ai = getAiClient();
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
