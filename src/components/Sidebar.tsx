@@ -1,5 +1,5 @@
 import { UserProfile } from '../types';
-import { Camera, BookOpen, User, Settings, LogOut, Flame, X, Mic, DownloadCloud, Moon, Sparkles } from 'lucide-react';
+import { Radio, BookOpen, User, Settings, LogOut, Flame, X, Mic, DownloadCloud, Moon } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -59,14 +59,11 @@ export default function Sidebar({
           <div className="flex items-center justify-between gap-3 mb-10">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-[#8a9a5b] rounded-xl flex items-center justify-center text-white shadow-md">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-6 h-6">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15a2.25 2.25 0 002.25-2.25V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zM18.75 10.5h.008v.008h-.008V10.5z" />
-                </svg>
+                <Radio size={22} className="stroke-[2.5]" />
               </div>
               <div>
                 <h1 className="text-2xl font-black tracking-tight text-[#5a6a3b]">LingoLens</h1>
-                <p className="text-[10px] text-stone-400 font-semibold tracking-wider -mt-1 uppercase">مساعد الكاميرا الذكي</p>
+                <p className="text-[10px] text-stone-400 font-semibold tracking-wider -mt-1 uppercase">مساعد البث الذكي</p>
               </div>
             </div>
 
@@ -91,8 +88,8 @@ export default function Sidebar({
               }`}
             >
               <span className={`w-2.5 h-2.5 rounded-full transition-all ${activeTab === 'camera' ? 'bg-[#8a9a5b] scale-100' : 'bg-transparent scale-0'}`}></span>
-              <Camera size={20} className={activeTab === 'camera' ? 'text-[#8a9a5b]' : 'text-stone-400'} />
-              <span>الاستكشاف المباشر</span>
+              <Radio size={20} className={activeTab === 'camera' ? 'text-[#8a9a5b]' : 'text-stone-400'} />
+              <span>البث المباشر</span>
             </button>
 
             <button

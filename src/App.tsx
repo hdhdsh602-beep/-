@@ -22,7 +22,7 @@ import SpeechTranslatorView from './components/SpeechTranslatorView';
 import AICopilot from './components/AICopilot';
 import EveningQuiz from './components/EveningQuiz';
 
-import { Sparkles, Loader2, Award, Flame, Menu, Moon, ArrowLeft } from 'lucide-react';
+import { Sparkles, Loader2, Award, Flame, Menu, Moon, ArrowLeft, Radio } from 'lucide-react';
 
 export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -31,6 +31,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('camera');
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [isEveningQuizOpen, setIsEveningQuizOpen] = useState<boolean>(false);
+  const [cameraInitialMode, setCameraInitialMode] = useState<'objects' | 'ocr' | 'offline'>('objects');
   
   // Audio Speech Configurations
   const [settings, setSettings] = useState<AppSettings>({
@@ -135,6 +136,11 @@ export default function App() {
   }, [activeTab, userId, sessionCount]);
 
   // Handle manual logout
+  const openCameraMode = (mode: 'objects' | 'ocr' | 'offline') => {
+    setCameraInitialMode(mode);
+    setActiveTab('camera');
+  };
+
   const handleLogout = async () => {
     // If we have items in active session, store them before user leaves
     if (userId && sessionCount > 0) {
@@ -198,10 +204,7 @@ export default function App() {
 
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-[#8a9a5b] rounded-lg flex items-center justify-center text-white shadow-sm">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor" className="w-5 h-5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6.827 6.175A2.31 2.31 0 015.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 002.25 2.25h15a2.25 2.25 0 002.25-2.25V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 00-1.134-.175 2.31 2.31 0 01-1.64-1.055l-.822-1.316a2.192 2.192 0 00-1.736-1.039 48.774 48.774 0 00-5.232 0 2.192 2.192 0 00-1.736 1.039l-.821 1.316z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 12.75a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0z" />
-            </svg>
+            <Radio size={18} className="stroke-[2.5]" />
           </div>
           <span className="text-base font-black text-[#5a6a3b] tracking-tight">LingoLens</span>
         </div>
@@ -242,10 +245,10 @@ export default function App() {
             <header className="flex justify-between items-center mb-4 md:mb-6">
               <div>
                 <h2 className="text-2xl md:text-3xl font-black text-stone-900 tracking-tight flex items-center gap-2">
-                  <span>الاستكشاف الذكي والتعلم</span>
+                  <span>البث الذكي والتعلم</span>
                   <Sparkles size={20} className="text-amber-500 fill-amber-500 animate-pulse" />
                 </h2>
-                <p className="text-xs text-stone-500 font-semibold mt-0.5">ثبّت نظرك على الكائنات لمدة ثوانٍ معدودة ليقوم المعلم بترجمتها ونطقها لك بالإنكليزية!</p>
+                <p className="text-xs text-stone-500 font-semibold mt-0.5">افتح بث الكائنات أو النصوص، وثبّت نظرك لثوانٍ قليلة ليترجمها المعلم وينطقها لك بالإنكليزية!</p>
               </div>
             </header>
 
@@ -283,6 +286,7 @@ export default function App() {
                 ttsPitch={settings.ttsPitch}
                 ttsRate={settings.ttsRate}
                 autoSpeak={settings.autoSpeak}
+                initialMode={cameraInitialMode}
               />
             </div>
           </div>
@@ -334,7 +338,9 @@ export default function App() {
         {activeTab === 'settings' && (
           <SettingsView 
             settings={settings} 
-            onSettingsChange={setSettings} 
+            onSettingsChange={setSettings}
+            onOpenOfflineKit={() => openCameraMode('offline')}
+            onOpenLiveStream={() => openCameraMode('objects')}
           />
         )}
 
