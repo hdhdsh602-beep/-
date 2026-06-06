@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 import { VOCABULARY_MAP, VocabularyMeta } from '../data/vocabulary';
 import { saveWord } from '../lib/firebaseService';
 import { 
@@ -24,7 +24,9 @@ import {
   DownloadCloud,
   Wifi,
   Check,
-  BookOpen
+  BookOpen,
+  SlidersHorizontal,
+  X
 } from 'lucide-react';
 
 interface OCRPreset {
@@ -309,10 +311,11 @@ export default function CameraView({
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [savingDoc, setSavingDoc] = useState<boolean>(false);
 
-  // Simulation fallback mode and classified active scene
-  const [simulateMode, setSimulateMode] = useState<boolean>(false);
-  const [currentSimulatedItem, setCurrentSimulatedItem] = useState<string | null>(null);
-  const [simActiveSceneId, setSimActiveSceneId] = useState<string>('home');
+  // Camera error display state (no simulate mode anymore)
+  const [cameraFailed, setCameraFailed] = useState<boolean>(false);
+
+  // Detection settings panel toggle
+  const [showDetectionSettings, setShowDetectionSettings] = useState<boolean>(false);
 
   // Futuristic Smart Glasses Clutter Mitigation configuration
   const [glassesFilterMode, setGlassesFilterMode] = useState<'gaze' | 'radar'>('gaze');
@@ -488,30 +491,13 @@ export default function CameraView({
     setLockedObject(null);
     setLockedClassId(null);
     setFocusProgress(0);
-    setCurrentSimulatedItem(null);
     if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     if (speechResetTimeoutRef.current) clearTimeout(speechResetTimeoutRef.current);
-    
-    // Stop any ongoing synthesizer voices instantly when switching modes
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+    lastFrameTimeRef.current = 0;
+    isDetectingRef.current = false;
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   }, [activeViewMode]);
-
-  // OCR Auto Scan Debouncer - automatically translates document 1.5 seconds after user stops typing
-  useEffect(() => {
-    if (activeViewMode !== 'ocr' || !ocrCustomText.trim()) return;
-    
-    // Avoid double API trigger if same as current result english text
-    if (ocrResult && ocrResult.english.trim().toLowerCase() === ocrCustomText.trim().toLowerCase()) return;
-
-    const handler = setTimeout(() => {
-      triggerOcrScan();
-    }, 1500);
-
-    return () => clearTimeout(handler);
-  }, [ocrCustomText, activeViewMode]);
 
   // Speak Arabic word / translation sentences
   const speakArabic = (text: string) => {
@@ -598,23 +584,24 @@ export default function CameraView({
   };
 
   // OCR Laser Scanning steps player with remote server-side AI fallback
-  const triggerOcrScan = async () => {
-    if (!ocrCustomText.trim()) return;
+  const triggerOcrScan = useCallback(async () => {
+    const textToScan = ocrCustomText.trim();
+    if (!textToScan) return;
     setOcrScanning(true);
     setOcrResult(null);
     setOcrSaved(false);
     setSavedVocabWords({});
     setOcrScanStage(1);
- 
+
     // Dynamic animation sequence for scanning
     setTimeout(() => {
       setOcrScanStage(2);
       setTimeout(async () => {
         setOcrScanStage(3);
-        
+
         if (isOfflineModeActive) {
           setTimeout(() => {
-            const fallbackResult = handleTranslateCustomText(ocrCustomText);
+            const fallbackResult = handleTranslateCustomText(textToScan);
             setOcrScanStage(4);
             setOcrScanning(false);
             setOcrResult({
@@ -626,46 +613,46 @@ export default function CameraView({
           }, 600);
           return;
         }
-        
+
         try {
-          // Perform server-side dynamic translation using our newly created Express + Gemini API proxy!
           const response = await fetch("/api/translate", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ text: ocrCustomText })
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: textToScan })
           });
-          
+
           if (!response.ok) {
             throw new Error("Dynamic translation API failed with status: " + response.status);
           }
-          
+
           const data = await response.json();
+
+          // Guard: API returned an error object instead of a translation
+          if (data.error) {
+            throw new Error(data.error);
+          }
+
           const result: OCRPreset = {
             id: 'dyn_' + Date.now(),
             title: data.title || "ترجمة ذكية بالعدسة",
-            english: data.english || ocrCustomText,
-            arabic: data.arabic,
+            english: data.english || textToScan,
+            arabic: data.arabic || 'تعذرت الترجمة، يرجى المحاولة مرة أخرى.',
             category: data.category || "ترجمة فورية",
             phonetics: data.phonetics || "[قيد الرصد]",
-            exampleEn: data.exampleEn || `Scanned: "${ocrCustomText}"`,
+            exampleEn: data.exampleEn || `Scanned: "${textToScan}"`,
             exampleAr: data.exampleAr || `الترجمة: "${data.arabic}"`,
             grammarTip: data.grammarTip,
             vocabulary: data.vocabulary
           };
-          
+
           setOcrScanStage(4);
           setOcrScanning(false);
           setOcrResult(result);
           onWordIdentified(result.english);
-          
+
         } catch (err) {
           console.warn("Express translation proxy fallback triggered: ", err);
-          
-          // Graceful dictionary word-by-word matcher fallback client-side
-          const fallbackResult = handleTranslateCustomText(ocrCustomText);
-          
+          const fallbackResult = handleTranslateCustomText(textToScan);
           setOcrScanStage(4);
           setOcrScanning(false);
           setOcrResult(fallbackResult);
@@ -673,7 +660,19 @@ export default function CameraView({
         }
       }, 600);
     }, 600);
-  };
+  }, [ocrCustomText, isOfflineModeActive, onWordIdentified]);
+
+  // OCR Auto Scan Debouncer - automatically translates 1.5s after user stops typing
+  useEffect(() => {
+    if (activeViewMode !== 'ocr' || !ocrCustomText.trim()) return;
+    if (ocrScanning) return;
+
+    const handler = setTimeout(() => {
+      triggerOcrScan();
+    }, 1500);
+
+    return () => clearTimeout(handler);
+  }, [ocrCustomText, activeViewMode, ocrScanning, triggerOcrScan]);
 
   // References to keep track of intervals/animation frames and anti-repetition guards
   const requestRef = useRef<number | null>(null);
@@ -684,6 +683,11 @@ export default function CameraView({
   const lastSpokenIdRef = useRef<string | null>(null);
   const spokenHistoryRef = useRef<Set<string>>(new Set<string>());
   const speechResetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Throttle: track last frame analysis timestamp (target: 1 FPS = 1000ms interval)
+  const lastFrameTimeRef = useRef<number>(0);
+  const FRAME_INTERVAL_MS = 1000; // 1 FPS — prevents overheating
+  // Track if a detection is already in-flight to prevent overlapping async calls
+  const isDetectingRef = useRef<boolean>(false);
 
   // Everyday household items used for fallback simulation
   const SIMULATED_ITEMS = [
@@ -715,13 +719,13 @@ export default function CameraView({
       try {
         if (active) setModelLoading(true);
         
-        // Wait up to 5 seconds for head script tags to finish rendering/loading
+        // Wait up to 15 seconds for head script tags to finish rendering/loading
         const waitForGlobals = async (ticks = 0): Promise<any> => {
           const windowAny = window as any;
           if (windowAny.cocoSsd && windowAny.tf) {
             return windowAny.cocoSsd;
           }
-          if (ticks > 25) { // 5 seconds
+          if (ticks > 75) { // 15 seconds
             throw new Error("لم نتمكن من الوصول لمكتبة تصنيف الرؤية البصرية COCO-SSD في المتصفح.");
           }
           await new Promise((resolve) => setTimeout(resolve, 200));
@@ -729,7 +733,22 @@ export default function CameraView({
           return waitForGlobals(ticks + 1);
         };
 
-        const cocoSsd = await waitForGlobals();
+        let cocoSsd = await waitForGlobals();
+
+        // Fallback: load TF + COCO-SSD dynamically if CDN scripts didn't inject globals
+        if (!cocoSsd) {
+          const loadScript = (src: string) => new Promise<void>((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.onload = () => resolve();
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+          cocoSsd = (window as any).cocoSsd;
+        }
+
         if (!active || !cocoSsd) return;
 
         const loadedModel = await cocoSsd.load();
@@ -742,8 +761,7 @@ export default function CameraView({
         console.error("Error loading TF models: ", err);
         if (active) {
           setModelError(err.message || 'فشل تحميل محرك الذكاء الاصطناعي المحلي.');
-          // Auto enable simulation so the user is never stuck and gets a rich experience!
-          setSimulateMode(true);
+          setCameraFailed(true);
         }
       } finally {
         if (active) setModelLoading(false);
@@ -760,82 +778,55 @@ export default function CameraView({
     };
   }, []);
 
-  // 2. Camera Activation and frame cycle setup
+  // 2. Camera Activation
   useEffect(() => {
     let stream: MediaStream | null = null;
     let active = true;
 
     async function startCamera() {
-      if (simulateMode) return;
-      
-      let resolved = false;
-      // Safety timeout: If camera permission or loading hangs/blocks in some browsers or iframes,
-      // fallback to simulate mode in 4 seconds so the user is never stuck.
-      const timeoutId = setTimeout(() => {
-        if (!resolved && active) {
-          console.warn("Camera activation timed out. Switching to simulation fallback mode.");
-          setCameraError("تأخر تشغيل الكاميرا! تم تفعيل وضع المحاكاة التفاعلية البديل تلقائياً لتجربة التطبيق بدون عقبات.");
-          setSimulateMode(true);
-        }
-      }, 4000);
-
       try {
         setCameraError(null);
-        const mediaStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } } 
+        const mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
         });
-        resolved = true;
-        clearTimeout(timeoutId);
         stream = mediaStream;
         streamRef.current = mediaStream;
         if (videoRef.current && active) {
           videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(err => {
-            console.warn("Error starting video playback:", err);
-          });
+          videoRef.current.play().catch(err => console.warn("Video play error:", err));
           setCameraActive(true);
         }
       } catch (err: any) {
-        resolved = true;
-        clearTimeout(timeoutId);
         console.warn("Camera access denied or failed: ", err);
         if (active) {
-          setCameraError("لم نتمكن من الوصول للكاميرا، ربما بسبب صلاحيات المتصفح أو قيود بيئة التجربة الفورية في الإطار (Iframe). يرجى الضغط على زر 'افتح في علامة تبويب جديدة' (Open in new tab) أعلى اليمين للتجربة الكاملة بجميع الميزات مع تفعيل الإذن، أو استخدام وضع المحاكاة الذكية.");
-          // Auto-switch to beautiful simulate mode so the user is never stuck
-          setSimulateMode(true);
+          setCameraError("لم نتمكن من الوصول للكاميرا. تأكد من منح الإذن للمتصفح ثم أعد تحميل الصفحة.");
+          setCameraFailed(true);
         }
       }
     }
 
-    if (modelReady && !simulateMode) {
-      startCamera();
-    }
+    if (modelReady) startCamera();
 
     return () => {
       active = false;
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      stream?.getTracks().forEach(t => t.stop());
       streamRef.current = null;
       setCameraActive(false);
     };
-  }, [modelReady, simulateMode]);
+  }, [modelReady]);
 
-  // Re-bind active stream to video element when view mode changes or on reload
+  // Re-bind active stream to video element when view mode changes
   useEffect(() => {
     if (cameraActive && videoRef.current && streamRef.current) {
-      if (videoRef.current.srcObject !== streamRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current)
         videoRef.current.srcObject = streamRef.current;
-      }
-      videoRef.current.play().catch(err => {
-        console.warn("Auto-play on view mode shift or mount interrupted: ", err);
-      });
+      videoRef.current.play().catch(err => console.warn("Auto-play interrupted:", err));
     }
-  }, [activeViewMode, cameraActive, simulateMode, modelReady]);
+  }, [activeViewMode, cameraActive]);
 
   // 3. Frame Processing and detection loop
   useEffect(() => {
-    if (!modelReady || !cameraActive || simulateMode || !videoRef.current || activeViewMode !== 'objects') {
+    if (!modelReady || !cameraActive || !videoRef.current || activeViewMode !== 'objects') {
       setPredictions([]);
       setFocusedObject(null);
       setFocusProgress(0);
@@ -848,11 +839,37 @@ export default function CameraView({
         return;
       }
 
+      // --- THROTTLE: skip frame if less than FRAME_INTERVAL_MS has elapsed ---
+      const now = performance.now();
+      if (now - lastFrameTimeRef.current < FRAME_INTERVAL_MS) {
+        requestRef.current = requestAnimationFrame(detectFrame);
+        return;
+      }
+
+      // --- GUARD: skip if a detection is already running (prevent overlapping async calls) ---
+      if (isDetectingRef.current) {
+        requestRef.current = requestAnimationFrame(detectFrame);
+        return;
+      }
+
+      lastFrameTimeRef.current = now;
+      isDetectingRef.current = true;
+
       try {
         if (modelRef.current) {
-          const results = await modelRef.current.detect(videoRef.current);
+          // Offload heavy TF inference off the hot animation path
+          // detect() returns a Promise — we await it so the main thread stays free
+          const results: any[] = await modelRef.current.detect(videoRef.current);
           
+          // --- MEMORY MANAGEMENT: dispose intermediate tensors kept by TF.js ---
+          const tf = (window as any).tf;
+          if (tf && tf.engine) {
+            // Purge any unreferenced tensors accumulated during this inference cycle
+            tf.engine().startScope();
+          }
+
           const video = videoRef.current;
+          if (!video) { isDetectingRef.current = false; return; } // guard unmount
           const videoWidth = video.videoWidth || 640;
           const videoHeight = video.videoHeight || 480;
           const centerX = videoWidth / 2;
@@ -965,9 +982,17 @@ export default function CameraView({
               }, 1500);
             }
           }
+
+          // --- MEMORY MANAGEMENT: end TF scope to release intermediate tensors ---
+          if (tf && tf.engine) {
+            tf.engine().endScope();
+          }
         }
       } catch (err) {
         console.error("Detection error: ", err);
+      } finally {
+        // Always release the in-flight guard so next frame can run
+        isDetectingRef.current = false;
       }
 
       if (activeViewMode === 'objects') {
@@ -982,7 +1007,7 @@ export default function CameraView({
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [modelReady, cameraActive, simulateMode, focusedObject, focusProgress, glassesFilterMode, activeViewMode]);
+  }, [modelReady, cameraActive, focusedObject, focusProgress, glassesFilterMode, activeViewMode]);
 
   // Trigger Locking of object, play TTS audio and report progress
   const triggerObjectLock = (classNameToLock: string) => {
@@ -1018,31 +1043,6 @@ export default function CameraView({
         }
       }
     }
-  };
-
-  // Simulated Object selection
-  const handleSimulateItemClick = (item: { id: string }) => {
-    setCurrentSimulatedItem(item.id);
-    setFocusedObject(item.id);
-    setFocusProgress(0);
-
-    if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-
-    // Speed up simulation loader for quick pleasant response
-    progressIntervalRef.current = setInterval(() => {
-      setFocusProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(progressIntervalRef.current as any);
-          return 100;
-        }
-        return prev + 25;
-      });
-    }, 100);
-
-    focusTimerRef.current = setTimeout(() => {
-      triggerObjectLock(item.id);
-    }, 450);
   };
 
   // Safe client-side Firestore vocabulary save handling
@@ -1185,990 +1185,418 @@ export default function CameraView({
     });
   };
 
-  const activeScene = SIMULATED_SCENES.find(sc => sc.id === simActiveSceneId) || SIMULATED_SCENES[0];
-
   return (
     <div className="w-full flex flex-col gap-5" dir="rtl">
-      
-      {/* Mode Navigation Selector Tab */}
+
+      {/* Mode Tabs */}
       <div className="flex flex-col sm:flex-row bg-stone-200/70 p-1.5 rounded-[24px] border border-stone-200/40 w-full max-w-4xl mx-auto z-10 shadow-sm gap-1">
-        <button
-          onClick={() => {
-            setActiveViewMode('objects');
-          }}
-          className={`flex-1 flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none ${
-            activeViewMode === 'objects'
-              ? 'bg-[#8a9a5b] text-white shadow-md'
-              : 'text-stone-600 hover:text-stone-900 hover:bg-white/40'
-          }`}
-        >
-          <Scan size={16} />
-          <span>رصد وتتبع الكائنات المجسمة</span>
-        </button>
-        <button
-          onClick={() => {
-            setActiveViewMode('ocr');
-          }}
-          className={`flex-1 flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none ${
-            activeViewMode === 'ocr'
-              ? 'bg-[#8a9a5b] text-white shadow-md'
-              : 'text-stone-600 hover:text-stone-900 hover:bg-white/40'
-          }`}
-        >
-          <FileText size={16} />
-          <span>مسح وترجمة النصوص والأوراق</span>
-        </button>
-        <button
-          onClick={() => {
-            setActiveViewMode('offline');
-          }}
-          className={`flex-1 flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none ${
-            activeViewMode === 'offline'
-              ? 'bg-amber-600 text-white shadow-md'
-              : 'text-stone-600 hover:text-stone-900 hover:bg-white/40'
-          }`}
-        >
-          <WifiOff size={16} />
-          <span>حقيبة التعلم بدون إنترنت (50 كلمة) 🔌</span>
-        </button>
+        {(['objects', 'ocr', 'offline'] as const).map((mode) => (
+          <button
+            key={mode}
+            onClick={() => setActiveViewMode(mode)}
+            className={`flex-1 flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none ${
+              activeViewMode === mode
+                ? mode === 'offline' ? 'bg-amber-600 text-white shadow-md' : 'bg-[#8a9a5b] text-white shadow-md'
+                : 'text-stone-600 hover:text-stone-900 hover:bg-white/40'
+            }`}
+          >
+            {mode === 'objects' && <><Scan size={16} /><span>رصد وتتبع الكائنات</span></>}
+            {mode === 'ocr' && <><FileText size={16} /><span>مسح وترجمة النصوص</span></>}
+            {mode === 'offline' && <><WifiOff size={16} /><span>حقيبة التعلم بدون إنترنت (50 كلمة) 🔌</span></>}
+          </button>
+        ))}
       </div>
 
-      {/* Floating recommendation overlay if webcam rendering is black inside sandbox iframe */}
-      {!simulateMode && !modelLoading && (
-        <div className="flex justify-center -mb-2 mt-1 px-4 text-center">
-          <button
-            type="button"
-            onClick={() => {
-              setSimulateMode(true);
-              setLockedObject(null);
-              setFocusedObject(null);
-              setOcrResult(null);
-              lastSpokenIdRef.current = null;
-              spokenHistoryRef.current.clear();
-              setSpokenCount(0);
-            }}
-            className="bg-amber-500 hover:bg-amber-600 active:scale-95 text-white text-xs font-black px-5 py-3 rounded-2xl flex items-center gap-2.5 shadow-lg transition-all cursor-pointer pointer-events-auto select-none border border-amber-400"
-          >
-            <span className="relative flex h-2.5 w-2.5">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white"></span>
-            </span>
-            <span>الكاميرا سوداء أو لا تفتح؟ اضغط هنا لتفعيل وضع المحاكاة التفاعلية فوراً 📱</span>
-          </button>
-        </div>
-      )}
-
-      {/* Main Viewport Container */}
+      {/* Main Viewport */}
       <div className="relative w-full min-h-[460px] bg-stone-950 rounded-[40px] shadow-2xl overflow-hidden border-[12px] border-white flex flex-col items-center justify-center animate-in fade-in duration-300">
-        
-        {/* Inline CSS for the Laser Scan animation */}
-        <style>{`
-          @keyframes scan-motion {
-            0% { top: 0%; }
-            50% { top: 100%; }
-            100% { top: 0%; }
-          }
-        `}</style>
+        <style>{`@keyframes scan-motion{0%{top:0%}50%{top:100%}100%{top:0%}}`}</style>
 
-        {/* Loader Overlays */}
         {activeViewMode === 'offline' ? (
           <div className="absolute inset-0 bg-[#161513] flex flex-col p-6 overflow-y-auto scrollbar-none text-right text-white">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-stone-850 mb-5 shrink-0">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-4 border-b border-stone-800 mb-5 shrink-0">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-amber-500/15 rounded-xl border border-amber-500/25 text-amber-500">
-                  <WifiOff size={20} />
-                </div>
+                <div className="p-2.5 bg-amber-500/15 rounded-xl border border-amber-500/25 text-amber-500"><WifiOff size={20} /></div>
                 <div>
                   <h3 className="text-base font-black tracking-tight text-stone-100 flex items-center gap-2">
                     <span>منظومة العمل دون اتصال بالإنترنت</span>
-                    <span className="text-xs bg-amber-600/10 text-amber-500 px-2 py-0.5 rounded-md font-sans">v1.2.0 (Offline Suite)</span>
+                    <span className="text-xs bg-amber-600/10 text-amber-500 px-2 py-0.5 rounded-md">v1.2.0 (Offline Suite)</span>
                   </h3>
-                  <p className="text-[10px] text-stone-400 font-medium">قم بتحفيز وحفظ طرازات الذكاء الاصطناعي والترجمات لقراءة ليزرية بنسبة 100% بدون شبكة.</p>
+                  <p className="text-[10px] text-stone-400">قم بحفظ طرازات الذكاء الاصطناعي والترجمات لقراءة ليزرية بنسبة 100% بدون شبكة.</p>
                 </div>
               </div>
-              
               <div className="flex items-center gap-2.5 bg-stone-900 px-3 py-1.5 rounded-xl border border-white/5 shrink-0">
-                <span className="text-[10px] font-bold text-stone-400">نشاط وضع الأوفلاين:</span>
-                <button
-                  onClick={() => handleToggleOfflineMode(!isOfflineModeActive)}
-                  className={`px-3 py-1 text-[10px] font-black rounded-lg transition-all cursor-pointer ${
-                    isOfflineModeActive 
-                      ? 'bg-amber-600 text-white shadow-md' 
-                      : 'bg-stone-800 text-stone-500 hover:text-stone-300'
-                  }`}
-                >
+                <span className="text-[10px] font-bold text-stone-400">وضع الأوفلاين:</span>
+                <button onClick={() => handleToggleOfflineMode(!isOfflineModeActive)}
+                  className={`px-3 py-1 text-[10px] font-black rounded-lg transition-all cursor-pointer ${isOfflineModeActive ? 'bg-amber-600 text-white' : 'bg-stone-800 text-stone-500'}`}>
                   {isOfflineModeActive ? 'قيد العمل أوفلاين 🔌' : 'معطل (استخدام السيرفر)'}
                 </button>
               </div>
             </div>
 
-            {/* Caching Suite Status Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5 shrink-0">
-              {/* Words Pre-caching widget */}
               <div className="bg-stone-900/60 p-4 rounded-xl border border-white/5 flex flex-col gap-3">
                 <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <Database size={15} className="text-blue-400" />
-                    <span className="text-xs font-black text-stone-300">حقيبة الـ 50 كلمة الأساسية</span>
-                  </div>
-                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md ${wordsCached ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                    {wordsCached ? 'مكثّفة بالمتصفح 💾' : 'غير مخزنة'}
-                  </span>
+                  <div className="flex items-center gap-2"><Database size={15} className="text-blue-400" /><span className="text-xs font-black text-stone-300">حقيبة الـ 50 كلمة الأساسية</span></div>
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md ${wordsCached ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>{wordsCached ? 'مكثّفة 💾' : 'غير مخزنة'}</span>
                 </div>
-                
-                <p className="text-[10px] text-stone-400 leading-relaxed">
-                  روابط الـ 50 مفردة الأكثر أهمية مبرمجة في كود المتصفح لتعمل في أي بقعة جغرافية بدون باقة إنترنت.
-                </p>
-
+                <p className="text-[10px] text-stone-400">روابط الـ 50 مفردة الأكثر أهمية مبرمجة في المتصفح لتعمل بدون إنترنت.</p>
                 {isCaching ? (
                   <div className="space-y-1.5 pt-1">
-                    <div className="flex justify-between items-center text-[9px] font-bold text-stone-300">
-                      <span>جاري تشفير وتخزين قائمة المفردات بالمتصفح...</span>
-                      <span>{cachingProgress}%</span>
-                    </div>
-                    <div className="w-full bg-stone-850 rounded-full h-1 overflow-hidden">
-                      <div className="bg-blue-500 h-1 rounded-full transition-all duration-150" style={{ width: `${cachingProgress}%` }} />
-                    </div>
+                    <div className="flex justify-between text-[9px] font-bold text-stone-300"><span>جاري التخزين...</span><span>{cachingProgress}%</span></div>
+                    <div className="w-full bg-stone-800 rounded-full h-1"><div className="bg-blue-500 h-1 rounded-full transition-all" style={{ width: `${cachingProgress}%` }} /></div>
                   </div>
                 ) : (
-                  <button
-                    onClick={handleCacheWords}
-                    className="w-full py-2 bg-stone-850 hover:bg-stone-800 text-white text-[10px] font-black rounded-lg border border-white/5 transition-all flex items-center justify-center gap-1.5 cursor-pointer hover:border-blue-500/35"
-                  >
-                    <DownloadCloud size={13} className="text-blue-400" />
-                    <span>مزامنة وحفظ الـ 50 مفردة بالكامل محلياً</span>
+                  <button onClick={handleCacheWords} className="w-full py-2 bg-stone-800 hover:bg-stone-700 text-white text-[10px] font-black rounded-lg border border-white/5 flex items-center justify-center gap-1.5 cursor-pointer">
+                    <DownloadCloud size={13} className="text-blue-400" /><span>مزامنة وحفظ الـ 50 مفردة محلياً</span>
                   </button>
                 )}
               </div>
-
-              {/* Tensorflow model pre-caching widget */}
               <div className="bg-stone-900/60 p-4 rounded-xl border border-white/5 flex flex-col gap-3">
                 <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <Zap size={15} className="text-amber-400" />
-                    <span className="text-xs font-black text-stone-300">طراز الرؤية TensorFlow.js</span>
-                  </div>
-                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md ${modelCached ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                    {modelCached ? 'الطراز مخزن محلياً 🔋' : 'غير مخزن'}
-                  </span>
+                  <div className="flex items-center gap-2"><Zap size={15} className="text-amber-400" /><span className="text-xs font-black text-stone-300">طراز الرؤية TensorFlow.js</span></div>
+                  <span className={`text-[9px] font-black px-2 py-0.5 rounded-md ${modelCached ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>{modelCached ? 'مخزن 🔋' : 'غير مخزن'}</span>
                 </div>
-                
-                <p className="text-[10px] text-stone-400 leading-relaxed">
-                  تهيئة وبناء مسبق لملفات الشبكة العصبية COCO-SSD بحيث لا تحتاج لتحميل وزن النموذج مجدداً في المدرسة أو الخارج.
-                </p>
-
-                <button
-                  onClick={handleCacheModels}
-                  className="w-full py-2 bg-stone-850 hover:bg-stone-800 text-white text-[10px] font-black rounded-lg border border-white/5 transition-all flex items-center justify-center gap-1.5 cursor-pointer hover:border-amber-500/35"
-                >
-                  <DownloadCloud size={13} className="text-amber-400" />
-                  <span>تثبيت النموذج ومحركات العمل أوفلاين</span>
+                <p className="text-[10px] text-stone-400">تهيئة مسبقة لملفات الشبكة العصبية COCO-SSD لتعمل بدون إنترنت.</p>
+                <button onClick={handleCacheModels} className="w-full py-2 bg-stone-800 hover:bg-stone-700 text-white text-[10px] font-black rounded-lg border border-white/5 flex items-center justify-center gap-1.5 cursor-pointer">
+                  <DownloadCloud size={13} className="text-amber-400" /><span>تثبيت النموذج ومحركات العمل أوفلاين</span>
                 </button>
               </div>
             </div>
 
-            {/* Encyclopedia + interactive quiz challenge row */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch flex-1 min-h-0">
-              
-              {/* Interactive Encyclopedia of 50 offline words */}
-              <div className="lg:col-span-7 bg-stone-900/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between min-h-[300px]">
+              <div className="lg:col-span-7 bg-stone-900/40 p-4 rounded-xl border border-white/5 flex flex-col min-h-[300px]">
                 <div className="flex justify-between items-center mb-2.5">
-                  <div className="flex items-center gap-2">
-                    <BookOpen size={14} className="text-emerald-400" />
-                    <span className="text-[11px] font-black text-stone-200">القاموس المحلي التفاعلي (50 كلمة)</span>
-                  </div>
+                  <div className="flex items-center gap-2"><BookOpen size={14} className="text-emerald-400" /><span className="text-[11px] font-black text-stone-200">القاموس المحلي التفاعلي (50 كلمة)</span></div>
                   <div className="relative w-36">
                     <Search className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-500" size={11} />
-                    <input
-                      type="text"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      placeholder="ابحث..."
-                      className="w-full bg-stone-950 p-1.5 pr-6 text-[9px] font-bold rounded-lg border border-white/10 focus:outline-none focus:ring-1 focus:ring-amber-500 text-stone-200 placeholder-stone-600"
-                    />
+                    <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="ابحث..." className="w-full bg-stone-950 p-1.5 pr-6 text-[9px] font-bold rounded-lg border border-white/10 focus:outline-none focus:ring-1 focus:ring-amber-500 text-stone-200 placeholder-stone-600" />
                   </div>
                 </div>
-
                 <div className="flex-1 overflow-y-auto scrollbar-none space-y-1.5 max-h-[160px]">
-                  {OFFLINE_WORDS.filter(w => {
-                    if (!searchTerm.trim()) return true;
-                    const norm = searchTerm.trim().toLowerCase();
-                    return w.english.toLowerCase().includes(norm) || w.arabic.includes(norm) || w.category.includes(norm);
-                  }).map((item) => (
-                    <div 
-                      key={item.id}
-                      onClick={() => speakWord(item.english)}
-                      className="bg-stone-950/50 p-2 rounded-lg border border-white/5 hover:border-amber-500/30 hover:bg-stone-950/95 transition-all flex justify-between items-center gap-2 cursor-pointer group"
-                    >
+                  {OFFLINE_WORDS.filter(w => !searchTerm.trim() || w.english.toLowerCase().includes(searchTerm.toLowerCase()) || w.arabic.includes(searchTerm)).map((item) => (
+                    <div key={item.id} onClick={() => speakWord(item.english)} className="bg-stone-950/50 p-2 rounded-lg border border-white/5 hover:border-amber-500/30 transition-all flex justify-between items-center gap-2 cursor-pointer group">
                       <div className="flex-1 text-right flex flex-col">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-serif font-black text-[11px] text-stone-200 group-hover:text-amber-400 transition-colors">{item.english}</span>
+                          <span className="font-serif font-black text-[11px] text-stone-200 group-hover:text-amber-400">{item.english}</span>
                           <span className="text-[7.5px] font-mono text-stone-500">{item.phonetics}</span>
-                          <span className="text-[7px] font-black bg-white/5 text-stone-400 px-1 py-0.5 rounded leading-none">{item.category}</span>
+                          <span className="text-[7px] font-black bg-white/5 text-stone-400 px-1 py-0.5 rounded">{item.category}</span>
                         </div>
                         <span className="text-[10px] font-black text-stone-300 mt-0.5">{item.arabic}</span>
-                        <p className="text-[8.5px] text-stone-500 leading-none mt-1">“{item.exampleEn}”</p>
                       </div>
-
-                      <div className="shrink-0">
-                        <button
-                          type="button"
-                          className="p-1 bg-stone-900 rounded text-stone-400 group-hover:text-amber-500 group-hover:bg-amber-600/10 transition-all flex items-center justify-center border border-white/5"
-                        >
-                          <Volume2 size={11} />
-                        </button>
-                      </div>
+                      <button type="button" className="p-1 bg-stone-900 rounded text-stone-400 group-hover:text-amber-500 transition-all flex items-center justify-center border border-white/5"><Volume2 size={11} /></button>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Memory Training Quiz Challenge widget */}
-              <div className="lg:col-span-5 bg-stone-900/40 p-4 rounded-xl border border-white/5 flex flex-col justify-between min-h-[300px]">
+              <div className="lg:col-span-5 bg-stone-900/40 p-4 rounded-xl border border-white/5 flex flex-col min-h-[300px]">
                 <div className="flex justify-between items-center mb-2">
-                  <div className="flex items-center gap-1.5">
-                    <Award size={14} className="text-amber-500" />
-                    <span className="text-[11px] font-black text-stone-200">تحدي الذاكرة السريع (Offline Quiz)</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-[8.5px] bg-stone-950 px-2 py-0.5 rounded border border-white/5 font-sans text-stone-400 shrink-0">
+                  <div className="flex items-center gap-1.5"><Award size={14} className="text-amber-500" /><span className="text-[11px] font-black text-stone-200">تحدي الذاكرة السريع</span></div>
+                  <div className="flex items-center gap-1.5 text-[8.5px] bg-stone-950 px-2 py-0.5 rounded border border-white/5 text-stone-400">
                     <span>النتيجة: {quizScore} / {quizTotal}</span>
-                    <button onClick={handleResetQuizScore} className="hover:text-red-400 text-[8px] font-serif font-semibold border-r border-white/10 pr-1.5 mr-1.5">تصفير</button>
+                    <button onClick={handleResetQuizScore} className="hover:text-red-400 border-r border-white/10 pr-1.5 mr-1.5">تصفير</button>
                   </div>
                 </div>
-
                 {quizWord ? (
                   <div className="flex-1 flex flex-col justify-between min-h-0">
-                    <div className="text-center p-2.5 bg-stone-950/80 rounded-xl border border-white/5 flex flex-col items-center justify-center gap-1 shrink-0">
-                      <span className="text-[8.5px] font-black text-amber-500 block">ما هو المعنى الإنجليزي للمصطلح الآتي؟</span>
+                    <div className="text-center p-2.5 bg-stone-950/80 rounded-xl border border-white/5 flex flex-col items-center gap-1 shrink-0">
+                      <span className="text-[8.5px] font-black text-amber-500">ما هو المعنى الإنجليزي للمصطلح الآتي؟</span>
                       <h4 className="text-xs font-black text-white">{quizWord.arabic}</h4>
-                      <p className="text-[7.5px] text-stone-500 italic">تصنيف الكلمة: {quizWord.category}</p>
+                      <p className="text-[7.5px] text-stone-500 italic">تصنيف: {quizWord.category}</p>
                     </div>
-
-                    {/* Scrambled candidate button options list */}
                     <div className="space-y-1.5 my-2 flex-1 flex flex-col justify-center min-h-0">
                       {quizOptions.map((opt, oIdx) => {
-                        const isSelected = quizSelectedOption === opt;
                         const isCorrectOpt = opt.toLowerCase() === quizWord.english.toLowerCase();
-                        
                         let optStyle = 'bg-stone-950 hover:bg-stone-900 border-white/10 text-stone-300';
-                        if (quizAnswered) {
-                          if (isCorrectOpt) {
-                            optStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40';
-                          } else if (isSelected) {
-                            optStyle = 'bg-red-500/10 text-red-400 border-red-500/40';
-                          } else {
-                            optStyle = 'bg-stone-950/30 text-stone-600 border-white/5 cursor-not-allowed';
-                          }
-                        }
-
+                        if (quizAnswered) optStyle = isCorrectOpt ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/40' : quizSelectedOption === opt ? 'bg-red-500/10 text-red-400 border-red-500/40' : 'bg-stone-950/30 text-stone-600 border-white/5 cursor-not-allowed';
                         return (
-                          <button
-                            key={oIdx}
-                            disabled={!!quizAnswered}
-                            onClick={() => handleQuizAnswerSubmit(opt)}
-                            className={`w-full p-1.5 rounded-lg border text-center font-serif text-[10px] font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${optStyle}`}
-                          >
-                            {quizAnswered && isCorrectOpt && <Check size={10} />}
-                            <span>{opt}</span>
+                          <button key={oIdx} disabled={!!quizAnswered} onClick={() => handleQuizAnswerSubmit(opt)} className={`w-full p-1.5 rounded-lg border text-center text-[10px] font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${optStyle}`}>
+                            {quizAnswered && isCorrectOpt && <Check size={10} />}<span>{opt}</span>
                           </button>
                         );
                       })}
                     </div>
-
-                    {/* Next Question Control */}
                     <div className="flex justify-between items-center border-t border-white/5 pt-2 shrink-0">
                       {quizAnswered ? (
-                        <span className={`text-[8.5px] font-black ${quizAnswered === 'correct' ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {quizAnswered === 'correct' ? 'إجابة صحيحة! أحسنت 🌟' : `خطأ! الإجابة هي: ${quizWord.english}`}
-                        </span>
-                      ) : (
-                        <span className="text-[8px] text-stone-500">اختر الإجابة بلمس الكلمة.</span>
-                      )}
-
-                      <button
-                        onClick={handleGenerateQuiz}
-                        className="py-1 px-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[8.5px] font-black transition-all flex items-center gap-1 cursor-pointer"
-                      >
-                        <span>السؤال التالي</span>
-                        <RotateCcw size={9} />
-                      </button>
+                        <span className={`text-[8.5px] font-black ${quizAnswered === 'correct' ? 'text-emerald-400' : 'text-red-400'}`}>{quizAnswered === 'correct' ? 'إجابة صحيحة! 🌟' : `خطأ! الإجابة: ${quizWord.english}`}</span>
+                      ) : (<span className="text-[8px] text-stone-500">اختر الإجابة.</span>)}
+                      <button onClick={handleGenerateQuiz} className="py-1 px-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[8.5px] font-black flex items-center gap-1 cursor-pointer"><span>التالي</span><RotateCcw size={9} /></button>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center text-center text-stone-500">
-                    <Loader2 className="animate-spin mb-1" size={13} />
-                    <span className="text-[10px] font-semibold">جاري تحضير التحدي...</span>
-                  </div>
+                  <div className="flex-1 flex flex-col items-center justify-center text-stone-500"><Loader2 className="animate-spin mb-1" size={13} /><span className="text-[10px]">جاري التحضير...</span></div>
                 )}
               </div>
-
             </div>
           </div>
         ) : modelLoading ? (
           <div className="absolute inset-0 bg-stone-900/95 flex flex-col items-center justify-center text-white z-50 p-6 text-center">
             <Loader2 className="animate-spin text-[#8a9a5b] mb-4" size={48} />
             <h3 className="text-lg font-black mb-2">جاري تشغيل محرك الذكاء الاصطناعي المحلي...</h3>
-            <p className="text-xs text-stone-300 text-center max-w-sm font-medium mb-6 leading-relaxed">
-              نقوم بتحميل مكتبة تصنيف الرؤية لتعمل بالكامل في نظارتك الذكية..
-            </p>
+            <p className="text-xs text-stone-300 max-w-sm leading-relaxed">نقوم بتحميل مكتبة تصنيف الرؤية لتعمل بالكامل في نظارتك الذكية..</p>
+          </div>
+        ) : cameraFailed ? (
+          <div className="absolute inset-0 bg-stone-900/95 flex flex-col items-center justify-center text-white z-50 p-6 text-center gap-4">
+            <CameraOff size={48} className="text-red-400" />
+            <h3 className="text-lg font-black">تعذّر تشغيل الكاميرا</h3>
+            <p className="text-xs text-stone-300 max-w-sm leading-relaxed">{cameraError || 'يرجى منح إذن الكاميرا للمتصفح ثم إعادة تحميل الصفحة.'}</p>
+            <button onClick={() => { setCameraFailed(false); setCameraError(null); }} className="px-6 py-2.5 bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white rounded-2xl text-sm font-black cursor-pointer">إعادة المحاولة</button>
           </div>
         ) : (
-          /* Viewport Render: Real Camera vs. Beautiful Simulation Indoor Workspace */
-          simulateMode ? (
-            /* Simulation Viewport showing high-quality categorized AR environment scenes */
-            <div className="absolute inset-0 bg-stone-950 flex flex-col items-center justify-between relative select-none">
-              {/* Categorized Location Selector inside HUD */}
-              <div className="absolute top-4 inset-x-4 z-20 flex gap-2 overflow-x-auto pb-1.5 justify-center scrollbar-none">
-                {SIMULATED_SCENES.map((scene) => (
-                  <button
-                    key={scene.id}
-                    onClick={() => {
-                      setSimActiveSceneId(scene.id);
-                      setFocusedObject(null);
-                      setLockedObject(null);
-                      setLockedClassId(null);
-                      setCurrentSimulatedItem(null);
-                      setFocusProgress(0);
-                    }}
-                    className={`flex items-center gap-1.5 px-3.5 py-2 border rounded-full text-[11px] font-black tracking-tight transition-all border-stone-800 backdrop-blur-md cursor-pointer whitespace-nowrap shadow-md ${
-                      simActiveSceneId === scene.id
-                        ? 'bg-[#8a9a5b] text-white border-[#8a9a5b]'
-                        : 'bg-stone-900/80 hover:bg-stone-850 text-stone-200 border-white/10'
-                    }`}
-                  >
-                    <span>{scene.emoji}</span>
-                    <span>{scene.name}</span>
-                  </button>
-                ))}
-              </div>
-
-              {/* AR Viewport background image */}
-              <div 
-                className="absolute inset-0 bg-cover bg-center transition-all duration-700 opacity-60"
-                style={{ 
-                  backgroundImage: `url('${activeScene.imgUrl}')`
-                }} 
-              />
-              
-              {/* Ambient scan grid layout lining on the viewport glasses screen */}
-              <div className="absolute inset-0 bg-[linear-gradient(rgba(138,154,91,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(138,154,91,0.03)_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none" />
-
-              {/* Spatial AR Interactive coordinate Pins */}
-              <div className="absolute inset-0 z-10">
-                {activeScene.items.map((pin) => {
-                  const isHighlighted = focusedObject === pin.id;
-                  return (
-                    <button
-                      key={pin.id}
-                      onClick={() => handleSimulateItemClick(pin)}
-                      style={{ top: `${pin.topPct}%`, left: `${pin.leftPct}%` }}
-                      className={`absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center cursor-pointer group active:scale-90 transition-transform ${
-                        isHighlighted ? 'scale-110 shadow-lg' : 'hover:scale-105'
-                      }`}
-                      title={pin.labelAr}
-                    >
-                      {/* Glow ping */}
-                      <span className={`absolute inline-flex h-full w-full rounded-full bg-[#8a9a5b]/40 opacity-75 ${
-                        isHighlighted ? 'animate-ping' : 'group-hover:animate-ping'
-                      }`} />
-                      <span className={`relative inline-flex rounded-full h-4.5 w-4.5 border-2 shadow transition-all ${
-                        isHighlighted 
-                          ? 'bg-[#d8e2be] border-[#8a9a5b]' 
-                          : 'bg-[#8a9a5b] border-white'
-                      }`} />
-                      
-                      {/* Floating tag label */}
-                      <span className="absolute top-8 left-1/2 -translate-x-1/2 bg-stone-900/95 text-white text-[9px] font-black px-2 py-1 rounded-xl shadow-lg border border-white/10 whitespace-nowrap pointer-events-none flex items-center gap-1">
-                        <span className="text-[#d8e2be]">{pin.labelAr}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* Auto-Focus Overlay Brackets around the focused item pin under simulation mode */}
-              {autoFocusEnabled && focusedObject && (
-                (() => {
-                  const activePin = activeScene.items.find(pi => pi.id === focusedObject);
-                  if (!activePin) return null;
-                  return (
-                    <div 
-                      className="absolute -translate-x-1/2 -translate-y-1/2 border-2 border-dashed pointer-events-none transition-all duration-300 z-15 rounded-2xl"
-                      style={{
-                        top: `${activePin.topPct}%`,
-                        left: `${activePin.leftPct}%`,
-                        width: '120px',
-                        height: '120px',
-                        borderColor: '#8a9a5b',
-                        boxShadow: '0 0 24px rgba(138, 154, 91, 0.45)',
-                      }}
-                    >
-                      {/* Four high-tech corner thick brackets */}
-                      <div className="absolute -top-[2px] -left-[2px] w-4.5 h-4.5 border-t-4 border-l-4 border-[#8a9a5b] rounded-tl-lg animate-pulse" />
-                      <div className="absolute -top-[2px] -right-[2px] w-4.5 h-4.5 border-t-4 border-r-4 border-[#8a9a5b] rounded-tr-lg animate-pulse" />
-                      <div className="absolute -bottom-[2px] -left-[2px] w-4.5 h-4.5 border-b-4 border-l-4 border-[#8a9a5b] rounded-bl-lg animate-pulse" />
-                      <div className="absolute -bottom-[2px] -right-[2px] w-4.5 h-4.5 border-b-4 border-r-4 border-[#8a9a5b] rounded-br-lg animate-pulse" />
-                      
-                      {/* Inside details text badge identifying name in both languages before saving */}
-                      <div className="absolute top-[100%] mt-2.5 left-1/2 -translate-x-1/2 bg-stone-900/95 backdrop-blur-md text-white px-2 py-1.5 rounded-xl border border-white/10 flex flex-col items-center gap-0.5 shadow-xl whitespace-nowrap">
-                        <span className="text-[10px] font-black text-right block tracking-tight flex items-center gap-1.5 leading-none">
-                          <span className="text-[#d8e2be]">{activePin.labelAr}</span>
-                          <span className="text-stone-400 font-light text-[9px]">/</span>
-                          <span className="text-white font-bold">{activePin.labelEn}</span>
-                        </span>
-                        <span className="text-[8px] text-[#8a9a5b] font-mono leading-none mt-1">
-                          {focusProgress < 100 ? `⚡ تركيز تلقائي... ${focusProgress}%` : '🎯 تم التأكيد والتحقق'}
-                        </span>
-                      </div>
-
-                      {/* Scanning sweeping bar */}
-                      {focusProgress < 100 && (
-                        <div 
-                          className="absolute left-0 right-0 h-[2px] bg-[#8a9a5b] shadow-[0_0_8px_#8a9a5b] animate-bounce"
-                          style={{ top: `${focusProgress}%` }}
+          /* Real Live Camera — always direct */
+          <div ref={containerRef} className="absolute inset-0 w-full h-full flex items-center justify-center">
+            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+            {renderBoundingBoxes()}
+            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
+              <div className="relative">
+                <div className={`w-20 h-20 border-2 border-dashed rounded-full flex items-center justify-center transition-transform ${focusedObject ? 'border-[#8a9a5b] scale-110 rotate-12' : 'border-white/35'}`}>
+                  <div className="w-12 h-12 border border-white/10 rounded-full flex items-center justify-center">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                  </div>
+                </div>
+                {focusedObject && (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-20 h-20">
+                      <svg className="w-20 h-20 transform -rotate-90">
+                        <circle cx="40" cy="40" r="34" stroke="rgba(255,255,255,0.1)" strokeWidth="3" fill="transparent" />
+                        <circle cx="40" cy="40" r="34" stroke="#8a9a5b" strokeWidth="3" fill="transparent"
+                          strokeDasharray={`${2 * Math.PI * 34}`}
+                          strokeDashoffset={`${2 * Math.PI * 34 * (1 - focusProgress / 100)}`}
                         />
-                      )}
+                      </svg>
                     </div>
-                  );
-                })()
-              )}
-
-              {/* Interactive target overlay HUD info cards */}
-              <div className="relative z-10 w-full h-full flex flex-col p-6 justify-between pointer-events-none">
-                {/* Spacer (accounting for top selector) */}
-                <div className="h-10 shrink-0" />
-
-                {/* HUD Focus details & Gaze circle loader */}
-                <div className="flex-1 flex flex-col items-center justify-center relative">
-                  {focusedObject && (
-                    <div className="mb-4 animate-in fade-in scale-in duration-300 pointer-events-auto">
-                      {/* Simulated AR Smart Glasses overlay cards */}
-                      <div className="w-64 bg-stone-950/90 backdrop-blur-md border border-[#8a9a5b]/45 rounded-3xl relative shadow-[0_0_24px_rgba(138,154,91,0.25)] flex flex-col p-4 text-center">
-                        {/* Bounding corners */}
-                        <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-[#8a9a5b] rounded-tl-xl" />
-                        <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-[#8a9a5b] rounded-tr-xl" />
-                        <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-[#8a9a5b] rounded-bl-xl" />
-                        <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-[#8a9a5b] rounded-br-xl" />
-                        
-                        <div className="flex flex-col items-center gap-1.5">
-                          <span className="text-[9px] font-black tracking-widest text-[#8a9a5b] uppercase bg-[#8a9a5b]/10 px-2.5 py-0.5 rounded-full">
-                            رصد ذكي (AR TRACK LOCKED)
-                          </span>
-                          <h3 className="text-white text-base font-serif font-black tracking-tight" dir="ltr">
-                            {VOCABULARY_MAP[focusedObject]?.english || focusedObject}
-                          </h3>
-                          <div className="flex items-center gap-2">
-                            <p className="text-[#d8e2be] text-xs font-black">
-                              {VOCABULARY_MAP[focusedObject]?.arabic || focusedObject}
-                            </p>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                speakWord(VOCABULARY_MAP[focusedObject]?.english || focusedObject);
-                              }}
-                              className="p-1.5 bg-[#8a9a5b]/20 hover:bg-[#8a9a5b] hover:text-white text-white rounded-lg transition-all cursor-pointer shadow flex items-center justify-center active:scale-95"
-                              title="استمع للنطق الإنجليزي"
-                            >
-                              <Volume2 size={11} className="stroke-[3]" />
-                            </button>
-                          </div>
-                          
-                          <p className="text-stone-400 text-[10px] font-mono leading-none">
-                            {VOCABULARY_MAP[focusedObject]?.phonetics}
-                          </p>
-
-                          {/* Specific daily collocation sentence context display */}
-                          {activeScene.items.find(pi => pi.id === focusedObject)?.commentAr && (
-                            <div className="mt-2.5 pt-2 border-t border-white/10 text-[10px] font-bold text-stone-300 leading-relaxed text-right">
-                              💡 {activeScene.items.find(pi => pi.id === focusedObject)?.commentAr}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="relative">
-                    {/* Outer tracking ring */}
-                    <div className={`w-20 h-20 border-4 border-dashed rounded-full flex items-center justify-center transition-all duration-500 ${
-                      focusedObject ? 'border-[#8a9a5b]/60 rotate-45 scale-105' : 'border-white/20'
-                    }`}>
-                      <div className="w-12 h-12 border-2 border-white/10 rounded-full flex items-center justify-center">
-                        <div className="w-1.5 h-1.5 bg-[#8a9a5b] rounded-full" />
-                      </div>
-                    </div>
-
-                    {/* Circular loading lens scan progression */}
-                    {focusedObject && (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <div className="relative w-24 h-24 flex items-center justify-center">
-                          <svg className="absolute w-20 h-20 transform -rotate-90">
-                            <circle
-                              cx="40"
-                              cy="40"
-                              r="34"
-                              stroke="rgba(138, 154, 91, 0.15)"
-                              strokeWidth="4"
-                              fill="transparent"
-                            />
-                            <circle
-                              cx="40"
-                              cy="40"
-                              r="34"
-                              stroke="#8a9a5b"
-                              strokeWidth="4"
-                              fill="transparent"
-                              strokeDasharray={`${2 * Math.PI * 34}`}
-                              strokeDashoffset={`${2 * Math.PI * 34 * (1 - focusProgress / 100)}`}
-                              className="transition-all duration-100 ease-out"
-                            />
-                          </svg>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Simulated Screen instructions hint overlay */}
-                <div className="bg-black/40 backdrop-blur-md px-5 py-2 rounded-full border border-white/10 mx-auto text-center pointer-events-auto max-w-sm mt-auto shadow-xl">
-                  <p className="text-white text-[10px] font-black flex items-center gap-1.5 justify-center">
-                    <span className="inline-block w-1.5 h-1.5 bg-[#8a9a5b] rounded-full animate-pulse" />
-                    <span>انقر على النقاط المضيئة بالعدسة لمحاكاة النظر وتعلم الكلمة وسياقها اليومي فورياً</span>
-                  </p>
-                </div>
-              </div>
-
-                {/* Bottom Simulated Cards list */}
-                <div className="bg-white/90 backdrop-blur-lg p-4 rounded-3xl border border-white/20 shadow-xl mt-auto">
-                  <h4 className="text-xs font-black text-stone-700 mb-3 text-center">انقر للتعلم الفوري (مجسّمات بديلة للكاميرا):</h4>
-                  <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-                    {SIMULATED_ITEMS.map((item) => (
-                      <button
-                        key={item.id}
-                        onClick={() => handleSimulateItemClick(item)}
-                        className={`flex flex-col items-center p-2 rounded-xl transition-all border cursor-pointer ${
-                          currentSimulatedItem === item.id 
-                            ? 'bg-[#8a9a5b] text-white border-[#8a9a5b]' 
-                            : 'bg-white hover:bg-stone-50 text-stone-700 border-stone-200'
-                        }`}
-                      >
-                        <img src={item.imgUrl} alt={item.labelEn} className="w-8 h-8 rounded-md object-cover mb-1" />
-                        <span className="text-[10px] whitespace-nowrap font-bold">{item.labelAr}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-            /* Real Live Camera Viewport */
-            <div ref={containerRef} className="absolute inset-0 w-full h-full flex items-center justify-center relative">
-              <video 
-                ref={videoRef} 
-                autoPlay
-                playsInline 
-                muted
-                className="w-full h-full object-cover text-white" 
-              />
-              
-              {/* Real-time Bounding Boxes on top */}
-              {renderBoundingBoxes()}
-
-              {/* Centered target and looking indicator */}
-              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-                <div className="relative">
-                  <div className={`w-20 h-20 border-2 border-dashed rounded-full flex items-center justify-center transition-transform ${
-                    focusedObject ? 'border-[#8a9a5b] scale-110 rotate-12' : 'border-white/35'
-                  }`}>
-                    <div className="w-12 h-12 border border-white/10 rounded-full flex items-center justify-center">
-                      <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
-                    </div>
-                  </div>
-
-                  {/* Progress Circle on Camera Gaze */}
-                  {focusedObject && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-20 h-20">
-                        <svg className="w-20 h-20 transform -rotate-90">
-                          <circle
-                            cx="40"
-                            cy="40"
-                            r="34"
-                            stroke="rgba(255, 255, 255, 0.1)"
-                            strokeWidth="3"
-                            fill="transparent"
-                          />
-                          <circle
-                            cx="40"
-                            cy="40"
-                            r="34"
-                            stroke="#8a9a5b"
-                            strokeWidth="3"
-                            fill="transparent"
-                            strokeDasharray={`${2 * Math.PI * 34}`}
-                            strokeDashoffset={`${2 * Math.PI * 34 * (1 - focusProgress / 100)}`}
-                          />
-                        </svg>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                
-                {!focusedObject && (
-                  <div className="mt-4 flex flex-col items-center gap-2 max-w-xs text-center animate-in fade-in duration-200">
-                    {lowConfidenceWarning ? (
-                      <div className="bg-amber-600/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-amber-400/40 text-white shadow-lg flex flex-col items-center gap-0.5">
-                        <div className="flex items-center gap-1.5 text-[11px] font-black">
-                          <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" />
-                          <span>الشيء غير واضح بدقة 🔍</span>
-                        </div>
-                        <p className="text-[9.5px] text-amber-100 font-bold leading-tight">
-                          يرجى تعديل الزاوية، الاقتراب، أو تحسين إضاءة المكان للتحديد الدقيق.
-                        </p>
-                      </div>
-                    ) : notAbleToIdentify ? (
-                      <div className="bg-stone-900/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/10 text-stone-200 shadow-lg flex flex-col items-center gap-0.5">
-                        <div className="flex items-center gap-1.5 text-[11px] font-black text-amber-500">
-                          <span>تعذر تحديد الكائن بدقة</span>
-                        </div>
-                        <p className="text-[9.5px] text-stone-400 font-bold leading-tight">
-                          يرجى وضع الشيء في حلقة التتبع والتقاطه عن قرب.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/5">
-                        <p className="text-white text-[11px] font-semibold flex items-center gap-1">
-                          <Eye size={12} className="text-[#8a9a5b]" />
-                          <span>وجه الكاميرا أو ثبّت نظرك على كائن بالوسط...</span>
-                        </p>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
+              {!focusedObject && (
+                <div className="mt-4 flex flex-col items-center gap-2 max-w-xs text-center animate-in fade-in duration-200">
+                  {lowConfidenceWarning ? (
+                    <div className="bg-amber-600/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-amber-400/40 text-white shadow-lg flex flex-col items-center gap-0.5">
+                      <div className="flex items-center gap-1.5 text-[11px] font-black"><span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0" /><span>الشيء غير واضح بدقة 🔍</span></div>
+                      <p className="text-[9.5px] text-amber-100 font-bold leading-tight">يرجى تعديل الزاوية أو الاقتراب.</p>
+                    </div>
+                  ) : notAbleToIdentify ? (
+                    <div className="bg-stone-900/90 backdrop-blur-md px-4 py-2 rounded-2xl border border-white/10 text-stone-200 shadow-lg flex flex-col items-center gap-0.5">
+                      <div className="flex items-center gap-1.5 text-[11px] font-black text-amber-500"><span>تعذر تحديد الكائن بدقة</span></div>
+                      <p className="text-[9.5px] text-stone-400 font-bold leading-tight">يرجى وضع الشيء في حلقة التتبع عن قرب.</p>
+                    </div>
+                  ) : (
+                    <div className="bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/5">
+                      <p className="text-white text-[11px] font-semibold flex items-center gap-1">
+                        <Eye size={12} className="text-[#8a9a5b]" />
+                        <span>وجه الكاميرا أو ثبّت نظرك على كائن بالوسط...</span>
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )
+          </div>
         )}
       </div>
 
-      {/* Sleek, consolidated controller toolbar below viewport to eliminate clutter as explicitly requested by USER */}
-      <div className="bg-white p-4.5 rounded-[28px] border border-stone-200 shadow-sm flex flex-col gap-3">
+      {/* Controller toolbar */}
+      <div className="bg-white p-4 rounded-[28px] border border-stone-200 shadow-sm flex flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-4">
-          
-          {/* Mode Switcher Option (Real Camera vs Simulation Mode) */}
           <div className="flex items-center gap-3">
-            <span className="text-xs font-black text-stone-500">مستشعر البث الرئيسي:</span>
-            <button
-              type="button"
-              onClick={() => {
-                setSimulateMode(!simulateMode);
-                setLockedObject(null);
-                setFocusedObject(null);
-                setOcrResult(null);
-                lastSpokenIdRef.current = null;
-                spokenHistoryRef.current.clear();
-                setSpokenCount(0);
-              }}
-              className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                simulateMode 
-                  ? 'bg-[#8a9a5b]/10 text-[#5a6a3b]' 
-                  : 'bg-amber-50 text-amber-800 border border-amber-200'
-              }`}
-            >
-              {simulateMode ? '🤖 وضع المحاكاة الذكية (نشط)' : '📷 البث المباشر (الحي)'}
-            </button>
-
             {isOfflineModeActive && (
-              <span className="bg-amber-600/10 text-amber-750 text-[10px] font-black px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 border border-amber-200/50 animate-in fade-in duration-200">
-                <span className="relative flex h-1.5 w-1.5 shrink-0">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500"></span>
-                </span>
+              <span className="bg-amber-600/10 text-amber-700 text-[10px] font-black px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 border border-amber-200/50">
+                <span className="relative flex h-1.5 w-1.5 shrink-0"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" /><span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-amber-500" /></span>
                 <span>باقات الأوفلاين نشطة 🔌</span>
               </span>
             )}
           </div>
-
-          {/* Configuration toolbar icons and controls based on active Mode */}
           <div className="flex flex-wrap items-center gap-3.5">
             {activeViewMode === 'objects' && (
               <>
-                {/* Gaze Focus vs Radar Scan tool button */}
                 <button
                   type="button"
-                  onClick={() => setGlassesFilterMode(glassesFilterMode === 'gaze' ? 'radar' : 'gaze')}
-                  className="px-3 py-1.5 bg-stone-50 hover:bg-stone-100 text-stone-750 border border-stone-200 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5"
-                  title="سياق تتبع العين للنظارة لمنع التشتت بالأماكن المزدحمة"
-                >
-                  <span className={`w-1.5 h-1.5 rounded-full ${glassesFilterMode === 'gaze' ? 'bg-emerald-500 animate-pulse' : 'bg-blue-500'}`} />
-                  <span>تصفية العين: {glassesFilterMode === 'gaze' ? 'تركيز الوسط Gaze' : 'مسح شامل Radar'}</span>
-                </button>
-
-                {/* Intelligent repetitive voice suppression check */}
-                <button
-                  type="button"
-                  onClick={() => setAudioPlayOnce(!audioPlayOnce)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    audioPlayOnce 
-                      ? 'bg-emerald-50/70 text-emerald-800 border-emerald-150' 
-                      : 'bg-stone-50 text-stone-500 border-stone-200'
+                  onClick={() => setShowDetectionSettings(s => !s)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-black cursor-pointer flex items-center gap-1.5 border transition-all ${
+                    showDetectionSettings
+                      ? 'bg-[#8a9a5b] text-white border-[#8a9a5b] shadow-md'
+                      : 'bg-stone-50 hover:bg-stone-100 text-stone-700 border-stone-200'
                   }`}
-                  title="الحد من تكرار الأسماء الصوتية بالجولة لتجنب التشتت"
                 >
-                  <span>كتم المكرر: {audioPlayOnce ? 'مفعّل 🚶🔇' : 'معطّل'}</span>
+                  <SlidersHorizontal size={13} />
+                  <span>إعدادات الرصد</span>
+                  {spokenCount > 0 && (
+                    <span className="bg-amber-400 text-amber-900 text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center">{spokenCount}</span>
+                  )}
                 </button>
-
-                {audioPlayOnce && spokenCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      spokenHistoryRef.current.clear();
-                      setSpokenCount(0);
-                      if (typeof window !== 'undefined' && 'vibrate' in navigator) {
-                        try { navigator.vibrate([40, 40]); } catch (e) {}
-                      }
-                    }}
-                    className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-xl text-[10px] font-black transition-all cursor-pointer border border-amber-100 flex items-center gap-1"
-                  >
-                    <span>تصفير الذاكرة 🔄</span>
-                    <strong className="bg-amber-200 text-amber-900 rounded px-1.5 font-sans">{spokenCount}</strong>
+              </>
+            )}
+            {activeViewMode === 'ocr' && (
+              <button onClick={triggerOcrScan} disabled={ocrScanning || !ocrCustomText.trim()}
+                className={`px-4 py-1.5 rounded-xl flex items-center gap-1.5 text-xs font-black cursor-pointer border ${ocrScanning ? 'bg-stone-800 text-white cursor-not-allowed border-stone-900' : !ocrCustomText.trim() ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed' : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white border-[#8a9a5b]'}`}>
+                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>جاري الترجمة...</span></> : <><Scan size={13} /><span>تحليل ليزري للعدسة المترجمة</span></>}
+              </button>
+            )}
+          </div>
+        </div>
+        {/* Detection Settings Panel */}
+        {activeViewMode === 'objects' && showDetectionSettings && (
+          <div className="border-t border-stone-100 pt-3 flex flex-col gap-3 animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-black text-stone-500 flex items-center gap-1.5">
+                <SlidersHorizontal size={12} className="text-[#8a9a5b]" />
+                إعدادات الرصد والتتبع
+              </span>
+              <button type="button" onClick={() => setShowDetectionSettings(false)} className="p-1 hover:bg-stone-100 rounded-lg text-stone-400 cursor-pointer">
+                <X size={13} />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {/* Gaze filter */}
+              <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-stone-700">تصفية العين</span>
+                  <span className="text-[9px] text-stone-400">{glassesFilterMode === 'gaze' ? 'رصد أقرب كائن للوسط فقط' : 'رصد جميع الكائنات'}</span>
+                </div>
+                <button type="button" onClick={() => setGlassesFilterMode(glassesFilterMode === 'gaze' ? 'radar' : 'gaze')}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all ${
+                    glassesFilterMode === 'gaze' ? 'bg-[#8a9a5b] text-white' : 'bg-blue-500 text-white'
+                  }`}>
+                  {glassesFilterMode === 'gaze' ? 'Gaze 👁️' : 'Radar 📡'}
+                </button>
+              </div>
+              {/* Audio repeat */}
+              <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-stone-700">كتم المكرر</span>
+                  <span className="text-[9px] text-stone-400">{audioPlayOnce ? 'لا ينطق نفس الكلمة مرتين' : 'ينطق كل مرة'}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {audioPlayOnce && spokenCount > 0 && (
+                    <button type="button" onClick={() => { spokenHistoryRef.current.clear(); setSpokenCount(0); }}
+                      className="px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded-lg text-[9px] font-black cursor-pointer flex items-center gap-1">
+                      <RotateCcw size={9} />{spokenCount}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setAudioPlayOnce(!audioPlayOnce)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all ${
+                      audioPlayOnce ? 'bg-emerald-500 text-white' : 'bg-stone-300 text-stone-600'
+                    }`}>
+                    {audioPlayOnce ? 'مفعّل' : 'معطّل'}
                   </button>
-                )}
-
-                {/* Gaze bounding auto-focus brackets */}
-                <button
-                  type="button"
-                  onClick={() => setAutoFocusEnabled(!autoFocusEnabled)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 border ${
-                    autoFocusEnabled 
-                      ? 'bg-emerald-50/70 text-emerald-800 border-emerald-150' 
-                      : 'bg-stone-50 text-stone-500 border-stone-200'
-                  }`}
-                >
-                  <span>مربعات التركيز والاهتزاز: {autoFocusEnabled ? 'تعمل 🎯' : 'معطلة'}</span>
+                </div>
+              </div>
+              {/* Auto-focus brackets */}
+              <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-stone-700">مربعات التركيز</span>
+                  <span className="text-[9px] text-stone-400">إطار أركان + اهتزاز لحظة الرصد</span>
+                </div>
+                <button type="button" onClick={() => setAutoFocusEnabled(!autoFocusEnabled)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all ${
+                    autoFocusEnabled ? 'bg-emerald-500 text-white' : 'bg-stone-300 text-stone-600'
+                  }`}>
+                  {autoFocusEnabled ? 'مفعّل 🎯' : 'معطّل'}
                 </button>
-
-                {/* Dynamic AI Accuracy Threshold Selector Tool */}
-                <div className="flex items-center gap-1 bg-stone-100 p-0.5 rounded-2xl border border-stone-200">
-                  <span className="text-[10px] font-black text-stone-500 px-2" title="الحد الأدنى لثقة الذكاء الاصطناعي لتجنب الأخطاء وبطء الحركة">دقة الكاميرا:</span>
-                  {[
-                    { val: 0.50, label: 'مرنة ⚡' },
-                    { val: 0.65, label: 'متوازنة ⚖️' },
-                    { val: 0.78, label: 'فائقة الدقة 🎯' }
-                  ].map((lvl) => (
-                    <button
-                      key={lvl.val}
-                      type="button"
-                      onClick={() => {
-                        setAccuracyThreshold(lvl.val);
-                        localStorage.setItem('lingolens_accuracy_threshold', lvl.val.toString());
-                        if (typeof window !== 'undefined' && 'vibrate' in navigator) {
-                          try { navigator.vibrate(30); } catch (e) {}
-                        }
-                      }}
-                      className={`px-2.5 py-1 rounded-xl text-[10px] font-black transition-all cursor-pointer ${
-                        accuracyThreshold === lvl.val
-                          ? 'bg-[#8a9a5b] text-white shadow-xs'
-                          : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/55'
-                      }`}
-                    >
+              </div>
+              {/* Accuracy threshold */}
+              <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-stone-700">دقة الكاميرا</span>
+                  <span className="text-[9px] text-stone-400">حد أدنى لثقة الذكاء الاصطناعي</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {[{ val: 0.50, label: 'مرنة' }, { val: 0.65, label: 'متوازنة' }, { val: 0.78, label: 'دقيقة' }].map((lvl) => (
+                    <button key={lvl.val} type="button"
+                      onClick={() => { setAccuracyThreshold(lvl.val); localStorage.setItem('lingolens_accuracy_threshold', lvl.val.toString()); }}
+                      className={`px-2 py-1 rounded-lg text-[9px] font-black cursor-pointer transition-all ${
+                        accuracyThreshold === lvl.val ? 'bg-[#8a9a5b] text-white' : 'bg-stone-200 text-stone-600 hover:bg-stone-300'
+                      }`}>
                       {lvl.label}
                     </button>
                   ))}
                 </div>
-              </>
-            )}
-
-            {activeViewMode === 'ocr' && (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={triggerOcrScan}
-                  disabled={ocrScanning || !ocrCustomText.trim()}
-                  className={`px-4.5 py-1.5 rounded-xl flex items-center gap-1.5 text-xs font-black transition-all cursor-pointer select-none border ${
-                    ocrScanning 
-                      ? 'bg-stone-800 text-white cursor-not-allowed border-stone-900' 
-                      : (!ocrCustomText.trim() 
-                        ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed' 
-                        : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white border-[#8a9a5b]')
-                  }`}
-                >
-                  {ocrScanning ? (
-                    <>
-                      <Loader2 className="animate-spin" size={13} />
-                      <span>جاري قراءة وترجمة المستند...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Scan size={13} />
-                      <span>تحليل ليزري للعدسة المترجمة</span>
-                    </>
-                  )}
-                </button>
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Clean, collapsible text editing workspace for Document Scanner Translation Mode */}
         {activeViewMode === 'ocr' && (
           <div className="border-t border-stone-100 pt-3 flex flex-col gap-1.5">
             <div className="flex justify-between items-center px-1">
-              <span className="text-[10px] font-black text-stone-400">لوحة مدخلات/تعديل مستند المسح الليزري</span>
+              <span className="text-[10px] font-black text-stone-400">لوحة مدخلات المسح الليزري</span>
               <span className="text-[9px] text-stone-400">الترجمة تفاعلية بالذكاء الاصطناعي</span>
             </div>
-            <textarea
-              value={ocrCustomText}
-              onChange={(e) => setOcrCustomText(e.target.value)}
-              placeholder="أدخل أي جملة أو لافتة أو فقرة بالإنجليزية هنا لتقوم العدسة بقراءتها وترجمتها بالكامل فوراً..."
-              className="w-full text-xs p-3 border border-stone-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#8a9a5b] bg-stone-50 text-stone-800 resize-none h-16 shadow-inner"
-            />
+            <textarea value={ocrCustomText} onChange={(e) => setOcrCustomText(e.target.value)}
+              placeholder="أدخل أي جملة أو لافتة أو فقرة بالإنجليزية هنا لتقوم العدسة بترجمتها فوراً..."
+              className="w-full text-xs p-3 border border-stone-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#8a9a5b] bg-stone-50 text-stone-800 resize-none h-16 shadow-inner" />
           </div>
         )}
       </div>
+
+      {/* Results panel */}
       {activeViewMode === 'ocr' ? (
-        /* Translation Mode Result Panel - STATIC, highly organized, and always below the viewport */
-        <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-300 text-right">
+        <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in duration-300 text-right">
           <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-5 pb-5 border-b border-stone-100">
-            <div className="flex-1 flex flex-col gap-1 text-right">
+            <div className="flex-1 flex flex-col gap-1">
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-extrabold text-[#8a9a5b] tracking-wider uppercase bg-[#8a9a5b]/10 px-2 py-0.5 rounded-lg flex items-center gap-1">
-                  <Languages size={10} className="stroke-[3]" />
-                  ترجمة معتمدة للنظارة الذكية
+                  <Languages size={10} className="stroke-[3]" />ترجمة معتمدة للنظارة الذكية
                 </span>
-                {ocrResult && (
-                  <span className="text-[10px] bg-sky-50 text-sky-700 px-2 py-0.5 rounded-lg font-black flex items-center gap-1">
-                    <CheckCircle size={10} />
-                    تم التثبيت والحفظ
-                  </span>
-                )}
+                {ocrResult && <span className="text-[10px] bg-sky-50 text-sky-700 px-2 py-0.5 rounded-lg font-black flex items-center gap-1"><CheckCircle size={10} />تم التثبيت</span>}
               </div>
-              <h3 className="text-xl font-black text-stone-900 mt-2">
-                {ocrResult ? ocrResult.title : "في انتظار بدء مسح الورقة..."}
-              </h3>
-              <p className="text-stone-400 text-xs mt-0.5">اللفظ باللغة الإنجليزية في العدسة مع استنباط المعاني وترجمة العبارات المجاورة.</p>
+              <h3 className="text-xl font-black text-stone-900 mt-2">{ocrResult ? ocrResult.title : 'في انتظار بدء مسح الورقة...'}</h3>
             </div>
-
-            {/* Speaking and saving operations for the entire OCR result */}
             {ocrResult && (
               <div className="flex flex-wrap gap-2.5 shrink-0">
-                <button
-                  onClick={() => speakArabic(ocrResult.arabic)}
-                  className="flex-1 lg:flex-initial px-5 py-3 bg-stone-100 hover:bg-stone-200 text-stone-850 rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs"
-                >
-                  <Volume2 size={18} className="text-[#8a9a5b]" />
-                  <span>انطق الترجمة بالعربية</span>
+                <button onClick={() => speakArabic(ocrResult.arabic)} className="flex-1 lg:flex-initial px-5 py-3 bg-stone-100 hover:bg-stone-200 rounded-2xl cursor-pointer flex items-center justify-center gap-2 font-bold text-xs">
+                  <Volume2 size={18} className="text-[#8a9a5b]" /><span>انطق بالعربية</span>
                 </button>
-
-                <button
-                  onClick={handleSaveOcrToDictionary}
-                  disabled={savingOcrDoc}
-                  className={`flex-1 lg:flex-initial px-5 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                    ocrSaved 
-                      ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' 
-                      : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white shadow-md'
-                  }`}
-                >
-                  {ocrSaved ? (
-                    <>
-                      <BookmarkCheck size={16} />
-                      <span>محفوظ في القاموس الشخصي</span>
-                    </>
-                  ) : (
-                    <>
-                      {savingOcrDoc ? <Loader2 size={16} className="animate-spin" /> : <Bookmark size={16} />}
-                      <span>حفظ الترجمة بالقاموس</span>
-                    </>
-                  )}
+                <button onClick={handleSaveOcrToDictionary} disabled={savingOcrDoc}
+                  className={`flex-1 lg:flex-initial px-5 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer ${ocrSaved ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white shadow-md'}`}>
+                  {ocrSaved ? <><BookmarkCheck size={16} /><span>محفوظ</span></> : <>{savingOcrDoc ? <Loader2 size={16} className="animate-spin" /> : <Bookmark size={16} />}<span>حفظ بالقاموس</span></>}
                 </button>
               </div>
             )}
           </div>
-
-          {/* OCR Translated Results Frame */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
-            {/* Left Frame: Source text (English) */}
-            <div className="bg-stone-50 p-4.5 rounded-2xl border border-stone-100 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-black text-stone-400 block uppercase mb-1">المستند بالإنجليزية المصدر:</span>
-                <p className="text-sm font-semibold font-serif text-stone-800 leading-relaxed text-left" dir="ltr">
-                  {ocrResult ? ocrResult.english : (ocrCustomText ? ocrCustomText : "أدخل نصاً بالإنجليزية واضغط على زر العدسة المترجمة للبدء بالتحليل...")}
-                </p>
-              </div>
+            <div className="bg-stone-50 p-4 rounded-2xl border border-stone-100">
+              <span className="text-[10px] font-black text-stone-400 block uppercase mb-1">المصدر بالإنجليزية:</span>
+              <p className="text-sm font-semibold font-serif text-stone-800 leading-relaxed text-left" dir="ltr">{ocrResult ? ocrResult.english : (ocrCustomText || 'أدخل نصاً بالإنجليزية للبدء...')}</p>
             </div>
-
-            {/* Right Frame: Destination Translated (Arabic) */}
-            <div className="bg-[#8a9a5b]/5 p-4.5 rounded-2xl border border-[#8a9a5b]/10 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-black text-[#6a7a3b] block uppercase mb-1">الترجمة العربية المستخلصة:</span>
-                <p className="text-sm font-extrabold text-stone-950 leading-relaxed">
-                  {ocrResult ? ocrResult.arabic : "اضغط على زر المسح لبدء الترجمة الليزرية الفورية للمصطلحات والجمل..."}
-                </p>
-              </div>
+            <div className="bg-[#8a9a5b]/5 p-4 rounded-2xl border border-[#8a9a5b]/10">
+              <span className="text-[10px] font-black text-[#6a7a3b] block uppercase mb-1">الترجمة العربية:</span>
+              <p className="text-sm font-extrabold text-stone-950 leading-relaxed">{ocrResult ? ocrResult.arabic : 'اضغط المسح لبدء الترجمة...'}</p>
             </div>
           </div>
-
-          {/* Grammar & Linguistic insights - Dynamic Teacher Advice */}
-          {ocrResult && ocrResult.grammarTip && (
+          {ocrResult?.grammarTip && (
             <div className="mt-5 bg-amber-50/60 p-5 rounded-2xl border border-amber-200/50 flex flex-col gap-2">
-              <span className="text-[11px] font-extrabold text-amber-800 tracking-wider uppercase flex items-center gap-1.5">
-                <Sparkles size={12} className="fill-amber-500 text-amber-500 animate-pulse" />
-                المعلم الذكي: تبسيط البناء القواعدي واللغوي (Grammar Insight)
+              <span className="text-[11px] font-extrabold text-amber-800 uppercase flex items-center gap-1.5">
+                <Sparkles size={12} className="fill-amber-500 text-amber-500 animate-pulse" />المعلم الذكي: تبسيط القواعد اللغوية
               </span>
-              <p className="text-stone-800 font-bold text-xs mt-0.5 leading-relaxed">
-                {ocrResult.grammarTip}
-              </p>
+              <p className="text-stone-800 font-bold text-xs leading-relaxed">{ocrResult.grammarTip}</p>
             </div>
           )}
-
-          {/* Vocabulary List Interactive Lesson Card stack */}
-          {ocrResult && ocrResult.vocabulary && ocrResult.vocabulary.length > 0 && (
+          {ocrResult?.vocabulary && ocrResult.vocabulary.length > 0 && (
             <div className="mt-6 border-t border-stone-100 pt-5">
               <h4 className="text-sm font-black text-stone-800 mb-4 flex items-center gap-2">
                 <span className="bg-[#8a9a5b] text-white text-[10px] uppercase font-bold py-0.5 px-2.5 rounded-lg">المدرب اللغوي</span>
-                <span>المفردات والتراكيب المهمة المستخرجة من الجملة:</span>
+                <span>المفردات المستخرجة:</span>
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {ocrResult.vocabulary.map((vocab, wordIdx) => {
                   const isItemSaved = savedVocabWords[vocab.word];
                   return (
-                    <div 
-                      key={wordIdx} 
-                      className="bg-stone-50/40 p-4 rounded-2xl border border-stone-200/70 hover:border-[#8a9a5b]/40 hover:bg-stone-50/80 transition-all flex justify-between items-center gap-3 group"
-                    >
+                    <div key={wordIdx} className="bg-stone-50/40 p-4 rounded-2xl border border-stone-200/70 hover:border-[#8a9a5b]/40 transition-all flex justify-between items-center gap-3 group">
                       <div className="flex-1 text-right flex flex-col gap-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-serif font-black text-sm text-stone-900 leading-none">{vocab.word}</span>
-                          <span className="text-[9px] text-stone-400 font-mono leading-none">{vocab.phonetic}</span>
-                          <span className="text-[8px] font-bold bg-[#8a9a5b]/10 text-[#8a9a5b] px-1.5 py-0.5 rounded-md leading-none h-4 flex items-center justify-center">{vocab.type}</span>
+                          <span className="font-serif font-black text-sm text-stone-900">{vocab.word}</span>
+                          <span className="text-[9px] text-stone-400 font-mono">{vocab.phonetic}</span>
+                          <span className="text-[8px] font-bold bg-[#8a9a5b]/10 text-[#8a9a5b] px-1.5 py-0.5 rounded-md">{vocab.type}</span>
                         </div>
-                        <p className="text-xs font-black text-stone-850 mt-1 leading-normal">
-                          {vocab.meaning}
-                        </p>
-                        <p className="text-[10px] text-stone-400 font-medium leading-normal">
-                          {vocab.explanation}
-                        </p>
+                        <p className="text-xs font-black text-stone-800 mt-1">{vocab.meaning}</p>
+                        <p className="text-[10px] text-stone-400">{vocab.explanation}</p>
                       </div>
-                      
-                      {/* Controls to speak and save inside vocabulary column */}
                       <div className="flex flex-col gap-1.5 shrink-0">
-                        <button
-                          onClick={() => speakWord(vocab.word)}
-                          className="p-1.5 bg-white hover:bg-[#8a9a5b]/10 hover:text-[#8a9a5b] text-stone-500 rounded-lg transition-all cursor-pointer flex items-center justify-center border border-stone-200 shadow-xs"
-                          title="استمع لنطق الكلمة"
-                        >
-                          <Volume2 size={13} className="stroke-[2.5]" />
-                        </button>
-                        
-                        <button
-                          onClick={() => handleSaveIndividualVocab(vocab.word, vocab.meaning, vocab.phonetic, vocab.type)}
-                          disabled={isItemSaved}
-                          className={`p-1.5 rounded-lg transition-all cursor-pointer flex items-center justify-center border ${
-                            isItemSaved 
-                              ? 'bg-emerald-50 text-emerald-600 border-emerald-200 cursor-not-allowed shadow-xs' 
-                              : 'bg-white hover:bg-stone-50 border-stone-200 text-stone-400 hover:text-stone-850 shadow-xs'
-                          }`}
-                          title={isItemSaved ? "محفوظ في قاموسك" : "حفظ بقاموسك الشخصي"}
-                        >
-                          {isItemSaved ? <BookmarkCheck size={13} className="stroke-[2.5]" /> : <Bookmark size={13} />}
+                        <button onClick={() => speakWord(vocab.word)} className="p-1.5 bg-white hover:bg-[#8a9a5b]/10 text-stone-500 rounded-lg cursor-pointer flex items-center justify-center border border-stone-200"><Volume2 size={13} /></button>
+                        <button onClick={() => handleSaveIndividualVocab(vocab.word, vocab.meaning, vocab.phonetic, vocab.type)} disabled={isItemSaved}
+                          className={`p-1.5 rounded-lg cursor-pointer flex items-center justify-center border ${isItemSaved ? 'bg-emerald-50 text-emerald-600 border-emerald-200 cursor-not-allowed' : 'bg-white text-stone-400 border-stone-200'}`}>
+                          {isItemSaved ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
                         </button>
                       </div>
                     </div>
@@ -2178,179 +1606,74 @@ export default function CameraView({
             </div>
           )}
         </div>
-      ) : (
-        /* Objects radar tracking layout cards original logic */
-        lockedObject ? (
-          <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm transform animate-in fade-in slide-in-from-bottom-4 duration-300 text-right">
-            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5 pb-5 border-b border-stone-100">
-              <div className="flex items-center gap-4 text-right">
-                {/* Visual marker */}
-                <div className="w-14 h-14 bg-[#8a9a5b]/10 rounded-2xl flex items-center justify-center text-[#8a9a5b] shrink-0 font-serif text-2xl font-black">
-                  {lockedObject.english.charAt(0)}
+      ) : lockedObject ? (
+        <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-300 text-right">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-5 pb-5 border-b border-stone-100">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 bg-[#8a9a5b]/10 rounded-2xl flex items-center justify-center text-[#8a9a5b] shrink-0 font-serif text-2xl font-black">{lockedObject.english.charAt(0)}</div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-extrabold text-[#8a9a5b] uppercase bg-[#8a9a5b]/10 px-2 py-0.5 rounded-lg">صنف: {lockedObject.category}</span>
+                <h3 className="text-2xl font-black text-stone-900 mt-1">{lockedObject.arabic}</h3>
+                <div className="flex items-center gap-2.5 mt-1">
+                  <span className="text-stone-700 font-serif text-lg font-bold">{lockedObject.english}</span>
+                  <span className="text-stone-400 font-mono text-xs">{lockedObject.phonetics}</span>
                 </div>
-
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-extrabold text-[#8a9a5b] tracking-wider uppercase bg-[#8a9a5b]/10 px-2 py-0.5 rounded-lg">
-                      صنف: {lockedObject.category}
-                    </span>
-                  </div>
-                  <h3 className="text-2xl font-black text-stone-900 mt-1">{lockedObject.arabic}</h3>
-                  <div className="flex items-center gap-2.5 mt-1">
-                    <span className="text-stone-700 font-serif text-lg font-bold">{lockedObject.english}</span>
-                    <span className="text-stone-400 font-mono text-xs">{lockedObject.phonetics}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Pronounce + Save trigger buttons */}
-              <div className="flex flex-wrap gap-2.5 w-full lg:w-auto">
-                <button
-                  onClick={() => speakWord(lockedObject.english)}
-                  className="flex-1 lg:flex-initial px-5 py-3 bg-stone-100 hover:bg-stone-200 text-stone-850 rounded-2xl transition-all cursor-pointer flex items-center justify-center gap-2 font-bold text-xs"
-                >
-                  <Volume2 size={18} className="text-[#8a9a5b]" />
-                  <span>استمع للنطق بالإنكليزية</span>
-                </button>
-
-                <button
-                  onClick={handleSaveToDictionary}
-                  disabled={savingDoc}
-                  className={`flex-1 lg:flex-initial px-5 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer ${
-                    isSaved 
-                      ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' 
-                      : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white shadow-md'
-                  }`}
-                >
-                  {isSaved ? (
-                    <>
-                      <BookmarkCheck size={16} />
-                      <span>محفوظ بالقاموس</span>
-                    </>
-                  ) : (
-                    <>
-                      {savingDoc ? <Loader2 size={16} className="animate-spin" /> : <Bookmark size={16} />}
-                      <span>حفظ بقاموسي الشخصي</span>
-                    </>
-                  )}
-                </button>
-
-                {simulateMode && (
-                  <button
-                    onClick={() => {
-                      setLockedObject(null);
-                      setLockedClassId(null);
-                      setCurrentSimulatedItem(null);
-                      setFocusedObject(null);
-                    }}
-                    className="p-3 border border-stone-200 hover:bg-[#fcfcf9] rounded-2xl text-stone-400 hover:text-stone-600 transition-all cursor-pointer flex items-center justify-center animate-in fade-in"
-                    title="تفريغ التحديد"
-                  >
-                    <RotateCcw size={16} />
-                  </button>
-                )}
               </div>
             </div>
-
-            {/* Example sentence tool */}
-            <div className="mt-5 bg-[#fbfbf8] p-5 rounded-2xl border border-stone-100 flex flex-col gap-3">
-              <span className="text-[10px] font-black text-stone-400 block uppercase">استخدام الكلمة في جملة تعليمية مفيدة:</span>
-              
-              <div className="flex items-center justify-between gap-3 bg-white p-3 rounded-xl border border-stone-150/60 shadow-xs">
-                <p className="text-base font-bold text-stone-900 font-serif leading-relaxed text-left flex-1" dir="ltr">
-                  “{lockedObject.exampleEn}”
-                </p>
-                <button
-                  type="button"
-                  onClick={() => speakWord(lockedObject.exampleEn)}
-                  className="p-1.5 bg-[#8a9a5b]/10 hover:bg-[#8a9a5b] text-[#5a6a3b] hover:text-white rounded-xl transition-all cursor-pointer flex items-center justify-center border border-[#8a9a5b]/20 shrink-0"
-                  title="نطق الجملة بالإنجليزية"
-                >
-                  <Volume2 size={16} className="stroke-[2.5]" />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between gap-3 bg-[#8a9a5b]/4 p-3 rounded-xl border border-[#8a9a5b]/10 shadow-xs">
-                <p className="text-sm font-bold text-stone-650 leading-relaxed text-right flex-1">
-                  ({lockedObject.exampleAr})
-                </p>
-                <button
-                  type="button"
-                  onClick={() => speakArabic(lockedObject.exampleAr)}
-                  className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-xl transition-all cursor-pointer flex items-center justify-center border border-stone-200 shrink-0"
-                  title="نطق الترجمة بالعربية"
-                >
-                  <Volume2 size={14} className="stroke-[2]" />
-                </button>
-              </div>
+            <div className="flex flex-wrap gap-2.5 w-full lg:w-auto">
+              <button onClick={() => speakWord(lockedObject.english)} className="flex-1 lg:flex-initial px-5 py-3 bg-stone-100 hover:bg-stone-200 rounded-2xl cursor-pointer flex items-center justify-center gap-2 font-bold text-xs">
+                <Volume2 size={18} className="text-[#8a9a5b]" /><span>استمع للنطق</span>
+              </button>
+              <button onClick={handleSaveToDictionary} disabled={savingDoc}
+                className={`flex-1 lg:flex-initial px-5 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer ${isSaved ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white shadow-md'}`}>
+                {isSaved ? <><BookmarkCheck size={16} /><span>محفوظ</span></> : <>{savingDoc ? <Loader2 size={16} className="animate-spin" /> : <Bookmark size={16} />}<span>حفظ بقاموسي</span></>}
+              </button>
             </div>
           </div>
-        ) : (
-          <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in duration-305 text-right flex flex-col items-center justify-center min-h-[160px] text-center w-full">
-            {!simulateMode && lowConfidenceWarning ? (
-              <div className="flex flex-col items-center max-w-xl">
-                <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-600 border border-amber-200/50 mb-3 animate-pulse">
-                  <Scan size={22} className="stroke-[2.5]" />
-                </div>
-                <h4 className="text-amber-850 font-black text-sm mb-1">🔍 تم رصد إشارة غير واضحة (التقط الشيء بشكل أفضل)</h4>
-                <p className="text-xs text-stone-600 leading-relaxed font-bold max-w-lg">
-                  مستوى دقة الكاميرا الحالي ({accuracyThreshold * 100}%) لم يستطع الجزم بهوية الشيء بدقة كافية لتفادي التخمينات العشوائية (مثل قراءة كف اليد كـ "شخص"). يرجى:
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full mt-3 bg-amber-50/20 p-3.5 rounded-2.5xl border border-amber-100 text-right">
-                  <div className="p-2 bg-white rounded-xl border border-stone-100">
-                    <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black block mb-1 text-center">التقريب والمسافة</span>
-                    <span className="text-[10px] text-stone-600 font-bold leading-normal block">قرّب الكاميرا ببطء من الشيء المراد تصنيفه لملئ الفوكس.</span>
-                  </div>
-                  <div className="p-2 bg-white rounded-xl border border-stone-100">
-                    <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black block mb-1 text-center">الإضاءة والثبات</span>
-                    <span className="text-[10px] text-stone-600 font-bold leading-normal block">ثبّت الهاتف وتأكد من وجود إضاءة كافية لمنع الغَبش.</span>
-                  </div>
-                  <div className="p-2 bg-white rounded-xl border border-stone-100">
-                    <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black block mb-1 text-center">التمركز الدقيق</span>
-                    <span className="text-[10px] text-stone-600 font-bold leading-normal block">ضع الشيء في مركز الدائرة الهولوغرافية بالمنتصف تماماً.</span>
-                  </div>
-                </div>
-              </div>
-            ) : !simulateMode && notAbleToIdentify ? (
-              <div className="flex flex-col items-center max-w-xl">
-                <div className="w-12 h-12 bg-stone-50 rounded-2xl flex items-center justify-center text-stone-400 border border-stone-200 mb-3">
-                  <WifiOff size={22} />
-                </div>
-                <h4 className="text-stone-800 font-black text-sm mb-1">تعذر تصنيف الكائن المكتشف بدقة عالية</h4>
-                <p className="text-xs text-stone-500 font-bold leading-relaxed max-w-md">
-                  يرجى توجيه الكاميرا وتصوير الشيء بزاوية أوضح، أو تعديل حساسية "دقة الكاميرا" من شريط الأدوات بالأسفل لتلقي تخمينات أكثر مرونة.
-                </p>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center max-w-lg">
-                <Eye size={36} className="text-[#8a9a5b] mb-3 animate-pulse" />
-                <h4 className="text-stone-850 font-bold text-sm mb-1">في انتظار تركيز النظر...</h4>
-                <p className="text-xs text-stone-400 leading-relaxed font-semibold">
-                  {simulateMode 
-                    ? "انقر على أي مجسّم من لوحة المحاكاة التفاعلية بالأعلى ليقوم المعلم العربي بنطقه وترجمته وصياغته لك في جمل مفيدة!"
-                    : "وجه عدسة الكاميرا نحو أي كائن (مثل كوب، هاتف، كرسي) لمدة ثانية واحدة ليقوم المساعد بتقديم درسه اللغوي فوراً!"}
-                </p>
-              </div>
-            )}
-          </div>
-        )
-      )}
-
-      {/* Footer statistics report */}
-      <footer className="flex flex-col sm:flex-row justify-between items-center px-4 py-2 gap-4">
-        <div className="flex gap-6 text-stone-400">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest">الكفاءة اللغوية</span>
-            <span className="text-stone-800 font-black text-sm">مجاني بالكامل (أوفلاين)</span>
-          </div>
-          <div className="h-4 w-px bg-stone-200"></div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-extrabold uppercase tracking-widest">وضع النطق</span>
-            <span className="text-stone-[#8a9a5b] font-black text-sm">مفعل (Speech Synthesis)</span>
+          <div className="mt-5 bg-[#fbfbf8] p-5 rounded-2xl border border-stone-100 flex flex-col gap-3">
+            <span className="text-[10px] font-black text-stone-400 block uppercase">استخدام الكلمة في جملة:</span>
+            <div className="flex items-center justify-between gap-3 bg-white p-3 rounded-xl border border-stone-200 shadow-xs">
+              <p className="text-base font-bold text-stone-900 font-serif leading-relaxed text-left flex-1" dir="ltr">"{lockedObject.exampleEn}"</p>
+              <button type="button" onClick={() => speakWord(lockedObject.exampleEn)} className="p-1.5 bg-[#8a9a5b]/10 hover:bg-[#8a9a5b] text-[#5a6a3b] hover:text-white rounded-xl cursor-pointer flex items-center justify-center border border-[#8a9a5b]/20 shrink-0"><Volume2 size={16} /></button>
+            </div>
+            <div className="flex items-center justify-between gap-3 bg-[#8a9a5b]/4 p-3 rounded-xl border border-[#8a9a5b]/10">
+              <p className="text-sm font-bold text-stone-600 leading-relaxed text-right flex-1">({lockedObject.exampleAr})</p>
+              <button type="button" onClick={() => speakArabic(lockedObject.exampleAr)} className="p-1.5 bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-xl cursor-pointer flex items-center justify-center border border-stone-200 shrink-0"><Volume2 size={14} /></button>
+            </div>
           </div>
         </div>
+      ) : (
+        <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in duration-300 text-right flex flex-col items-center justify-center min-h-[160px] text-center">
+          {lowConfidenceWarning ? (
+            <div className="flex flex-col items-center max-w-xl">
+              <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-600 border border-amber-200/50 mb-3 animate-pulse"><Scan size={22} /></div>
+              <h4 className="text-amber-800 font-black text-sm mb-1">🔍 تم رصد إشارة غير واضحة</h4>
+              <p className="text-xs text-stone-600 font-bold max-w-lg">مستوى دقة الكاميرا ({accuracyThreshold * 100}%) لم يستطع الجزم بهوية الشيء. قرّب الكاميرا أو حسّن الإضاءة.</p>
+            </div>
+          ) : notAbleToIdentify ? (
+            <div className="flex flex-col items-center max-w-xl">
+              <div className="w-12 h-12 bg-stone-50 rounded-2xl flex items-center justify-center text-stone-400 border border-stone-200 mb-3"><WifiOff size={22} /></div>
+              <h4 className="text-stone-800 font-black text-sm mb-1">تعذر تصنيف الكائن بدقة عالية</h4>
+              <p className="text-xs text-stone-500 font-bold max-w-md">يرجى توجيه الكاميرا وتصوير الشيء بزاوية أوضح.</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center max-w-lg">
+              <Eye size={36} className="text-[#8a9a5b] mb-3 animate-pulse" />
+              <h4 className="text-stone-800 font-bold text-sm mb-1">في انتظار تركيز النظر...</h4>
+              <p className="text-xs text-stone-400 leading-relaxed font-semibold">وجه عدسة الكاميرا نحو أي كائن (كوب، هاتف، كرسي) لمدة ثانية واحدة ليقوم المساعد بتقديم درسه اللغوي فوراً!</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <footer className="flex flex-col sm:flex-row justify-between items-center px-4 py-2 gap-4">
+        <div className="flex gap-6 text-stone-400">
+          <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold uppercase tracking-widest">الكفاءة اللغوية</span><span className="text-stone-800 font-black text-sm">مجاني بالكامل</span></div>
+          <div className="h-4 w-px bg-stone-200" />
+          <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold uppercase tracking-widest">النطق</span><span className="font-black text-sm text-[#8a9a5b]">مفعل (Speech Synthesis)</span></div>
+        </div>
         <div className="flex items-center gap-4 text-[#8a9a5b] font-medium text-xs">
-          <span>يمكنك التمرير للكاميرا ووضع الكائنات في بؤرة التركيز للنطق التلقائي.</span>
+          <span>وجه الكاميرا للكائنات لتتعلم مفرداتها فوراً.</span>
         </div>
       </footer>
     </div>

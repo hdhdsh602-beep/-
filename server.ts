@@ -159,13 +159,21 @@ app.post("/api/translate", async (req, res) => {
     let schemaConfig: any = null;
 
     if (fast) {
-      prompt = `Translate the following English phrase or sentence into a natural and highly accurate Arabic translation: "${trimmedText}"
+      prompt = `You are a professional contextual translator. STRICT RULES you must follow without exception:
+- TRANSLATE the MEANING of words — do NOT transliterate (do NOT map sounds to characters).
+- WRONG example: translating "Chair" as "تشير" (that is transliteration). CORRECT: "كرسي".
+- WRONG example: translating "كرسي" as "Chaire" or "Kursi" (that is transliteration). CORRECT: "Chair".
+- Always produce the true dictionary meaning in the target language.
+- Apply automatic spell-checking and grammar correction to the input before translating.
+- Output must be natural, fluent, and grammatically correct in Arabic.
+
+Translate the following English text into accurate Arabic: "${trimmedText}"
 Respond strictly with a single JSON object. Do not include markdown code block characters. The JSON must feature these exact keys:
 1. title: A short Arabic label (e.g. "ترجمة سريعة")
-2. english: The exact English source text.
-3. arabic: The accurate translation in Arabic.
+2. english: The spell-checked English source text.
+3. arabic: The accurate MEANING-based translation in Arabic (NOT transliteration).
 4. category: A short Arabic category.
-5. phonetics: Phonetic pronunciation guide (e.g., "[kɔːʃn]").`;
+5. phonetics: IPA phonetic pronunciation guide of the English text (e.g., "[kɔːʃn]").`;
 
       schemaConfig = {
         type: Type.OBJECT,
@@ -179,22 +187,27 @@ Respond strictly with a single JSON object. Do not include markdown code block c
         required: ["title", "english", "arabic", "category", "phonetics"]
       };
     } else {
-      prompt = `Translate the following English phrase or sentence into a natural, highly accurate Arabic translation suitable for smart educational AR glasses. Also provide an educational phonetic transcription, category, a friendly educational grammar/linguistic tip in Arabic, and a brand new educational example sentence in English using a key word from the text, with its Arabic translation.
+      prompt = `You are a professional contextual translator and educational linguist. STRICT TRANSLATION RULES you must follow without exception:
+- TRANSLATE the MEANING of every word — do NOT transliterate (do NOT map sounds to characters).
+- WRONG: translating "Chair" as "تشير" (transliteration). CORRECT Arabic: "كرسي".
+- WRONG: translating "School" as "سكول" (transliteration). CORRECT Arabic: "مدرسة".
+- WRONG: translating "كرسي" as "Kursi" or "Chaire" (transliteration). CORRECT English: "Chair".
+- Every word in the "arabic" field MUST be a real Arabic word with a real meaning — never romanized Arabic or phonetic spellings.
+- Apply automatic spell-checking and grammar correction to the English input text before processing.
+- The translation must be natural, fluent, grammatically correct, and suitable for an educational AR glasses context.
 
-Additionally, extract up to 5 key vocabulary words from the text and provide their part of speech, Arabic meaning, phonetic guide, and a fast Arabic educational usage explanation for each, so that the student can study them interactively.
-
-English Text to translate: "${trimmedText}"
+English Text to translate (spell-check first, then translate meaning): "${trimmedText}"
 
 Respond strictly with a single JSON object. Do not include markdown code block characters. The JSON must feature these exact keys:
 1. title: A short descriptive Arabic label for the visual content (e.g. "لافتة طريق تحذيرية", "قائمة طعام", "ملاحظة دراسية", "ترجمة نص")
-2. english: The exact English text to translate.
-3. arabic: The accurate translation in Arabic (rich, educational, and clean).
+2. english: The spell-corrected English text.
+3. arabic: The accurate MEANING-based Arabic translation (real Arabic words only — NO transliteration).
 4. category: A short Arabic category (e.g. "شارع وتنقل", "طعام وضيافة", "أدلة عامة", "تعليم لغوي").
-5. phonetics: Phonetic visual pronunciation guide (e.g., "[kɔːʃn]").
-6. grammarTip: A helpful, friendly explanation in Arabic of any grammar rule, structure, or vocabulary nuance present in this sentence (e.g., imperative verbs, passive form, perfect tense, or word choice).
+5. phonetics: IPA phonetic visual pronunciation guide of the English text (e.g., "[kɔːʃn]").
+6. grammarTip: A helpful, friendly explanation in Arabic of any grammar rule, structure, or vocabulary nuance present in this sentence.
 7. exampleEn: A helpful example sentence in English showing key vocabulary use.
-8. exampleAr: Arabic translation of that example sentence.
-9. vocabulary: An array of key English words extracted from the text, each represented as an object with: "word", "type" (part of speech like noun, verb, adjective, preposition), "meaning" (Arabic translation), "phonetic" (pronunciation guide), and "explanation" (very brief Arabic tutorial tip).`;
+8. exampleAr: Accurate MEANING-based Arabic translation of that example sentence (real Arabic words only).
+9. vocabulary: An array of key English words extracted from the text. For each word provide: "word" (English), "type" (part of speech: noun/verb/adjective/etc.), "meaning" (the direct Arabic MEANING — real Arabic dictionary word, NOT transliteration), "phonetic" (IPA guide), and "explanation" (brief Arabic educational tip about usage).`;
 
       schemaConfig = {
         type: Type.OBJECT,
@@ -298,12 +311,19 @@ app.post("/api/speech-coach", async (req, res) => {
     if (fast) {
       const srcLang = activeDirection === "ar_to_en" ? "Arabic" : "English";
       const tgtLang = activeDirection === "ar_to_en" ? "English" : "Arabic";
-      prompt = `Correct the spoken ${srcLang} phrase/sentence and provide its natural and highly accurate ${tgtLang} translation: "${trimmedText}"
-Respond strictly with a single JSON object. Do not include markdown code block characters or formatting. The JSON must feature these exact keys:
-1. originalText: Corrected original phrasing or speech transcription typos.
-2. translatedText: The accurate translation into ${tgtLang}.
-3. phonetics: Visual phonetic pronunciation guide of the English phrasing (e.g. "[haʊ vɛri naɪs]").
-4. category: A short Arabic category indicating context.`;
+      prompt = `You are a professional contextual translator. STRICT RULES:
+- TRANSLATE the MEANING of every word — do NOT transliterate (do NOT map sounds to letters).
+- If the input is English and output is Arabic: "Chair" MUST become "كرسي" NOT "تشير".
+- If the input is Arabic and output is English: "كرسي" MUST become "Chair" NOT "Kursi".
+- Apply spell-checking and grammar correction to the input before translating.
+- Output must use real dictionary words in the target language.
+
+Correct the spoken ${srcLang} input and translate its MEANING into ${tgtLang}: "${trimmedText}"
+Respond strictly with a single JSON object. No markdown. Exact keys:
+1. originalText: Spell-corrected original text.
+2. translatedText: MEANING-based translation in ${tgtLang} (real words only, no transliteration).
+3. phonetics: IPA phonetic guide of the English text.
+4. category: Short Arabic context category.`;
 
       schemaConfig = {
         type: Type.OBJECT,
@@ -316,24 +336,26 @@ Respond strictly with a single JSON object. Do not include markdown code block c
         required: ["originalText", "translatedText", "phonetics", "category"]
       };
     } else {
-      prompt = `You are an expert bilingual speech-to-speech translator and interactive language acquisition coach (LingoLens Co-Pilot).
-Analyze the following text input captured from an interactive speech signal.
-Input Text: "${trimmedText}"
-Translation Direction: "${activeDirection}" (en_to_ar means user spoke English and wants Arabic coaching, ar_to_en means user spoke Arabic and wants to learn corresponding premium English phrasing).
+      prompt = `You are an expert bilingual speech-to-speech translator and interactive language acquisition coach (LingoLens Co-Pilot). STRICT TRANSLATION RULES:
+- TRANSLATE the MEANING of every word — do NOT transliterate under any circumstances.
+- If input is English and target is Arabic: "School" → "مدرسة" (NEVER "سكول"). "Water" → "ماء" (NEVER "واتر").
+- If input is Arabic and target is English: "كتاب" → "Book" (NEVER "Kitab"). "سيارة" → "Car" (NEVER "Sayyara").
+- The "translatedText" field MUST contain real dictionary words of the target language only.
+- Apply automatic spell-checking and grammar correction to the input text.
+- Provide natural, fluent, grammatically correct translations appropriate for language learning.
 
-Respond strictly with a single JSON object. Do not include markdown code block characters or formatting. The JSON must feature these exact keys:
-1. originalText: Cleaned and corrected original input text with any minor speech transcription typos or spacing issues corrected.
-2. translatedText: The highest quality natural and educational translation (into Arabic for en_to_ar, or into English for ar_to_en).
-3. phonetics: Visual phonetic pronunciation guide of the English text (e.g. "[haʊ vɛri naɪs]").
-4. category: A short Arabic category showing context (e.g. "حوار يومي", "سفر ومطارات", "إدارة وتواصل").
-5. grammarInsight: An expert linguistic and grammar tip in Arabic explaining helpers, construct patterns, word ordering, or cultural context.
-6. scores: An object rating the speaking metrics to gamify the lesson:
-   - fluency: (integer, 1-100) estimated level of flow.
-   - vocabulary: (integer, 1-100) estimated vocabulary structure depth.
-   - complexity: (integer, 1-100) estimated sentence complexity.
-   - feedback: (string) a helpful brief 1-sentence tip in Arabic advising on how to perfect the pronunciation, tone, or sentence structure.
-7. alternativePhrasing: An array of 3 native alternative English ways to formulate the same thought, with their respective Arabic translation in parentheses in the same string.
-8. vocabulary: An array of up to 5 key vocabulary words, each represented as an object with: "word", "role" (part of speech like noun, verb, adj in Arabic), "translation" (Arabic meaning), "phonetics" (phonetic guide), and "guide" (very brief educational explanation of how to use it).`;
+Input Text (apply spell-check first): "${trimmedText}"
+Translation Direction: "${activeDirection}" (en_to_ar = user spoke English, wants Arabic coaching; ar_to_en = user spoke Arabic, wants English coaching).
+
+Respond strictly with a single JSON object. No markdown. Exact keys:
+1. originalText: Cleaned and spell-corrected original input.
+2. translatedText: MEANING-based translation (real target language words ONLY — no transliteration).
+3. phonetics: IPA phonetic guide of the English text.
+4. category: Short Arabic context category.
+5. grammarInsight: Expert Arabic linguistic tip on grammar, word order, or cultural context.
+6. scores: Object with fluency (1-100), vocabulary (1-100), complexity (1-100), feedback (Arabic tip string).
+7. alternativePhrasing: Array of 3 native alternative phrasings with Arabic meaning in parentheses.
+8. vocabulary: Array of up to 5 words each with "word", "role" (part of speech in Arabic), "translation" (real Arabic/English MEANING — not transliteration), "phonetics", "guide" (brief Arabic usage tip).`;
 
       schemaConfig = {
         type: Type.OBJECT,
