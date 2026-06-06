@@ -39,8 +39,17 @@ export default function App() {
     ttsPitch: 1.0,
     ttsRate: 0.9,
     autoSpeak: true,
-    trackingWaitTime: 1200
+    trackingWaitTime: 1200,
+    screenOverlayTranslationEnabled: localStorage.getItem('lingolens_screen_overlay_translation') === 'true'
   });
+
+  const handleSettingsChange = (nextSettings: AppSettings) => {
+    localStorage.setItem(
+      'lingolens_screen_overlay_translation',
+      nextSettings.screenOverlayTranslationEnabled ? 'true' : 'false'
+    );
+    setSettings(nextSettings);
+  };
 
   // Saved words list
   const [savedWords, setSavedWords] = useState<SavedWord[]>([]);
@@ -338,7 +347,7 @@ export default function App() {
         {activeTab === 'settings' && (
           <SettingsView 
             settings={settings} 
-            onSettingsChange={setSettings}
+            onSettingsChange={handleSettingsChange}
             onOpenOfflineKit={() => openCameraMode('offline')}
             onOpenLiveStream={() => openCameraMode('objects')}
           />

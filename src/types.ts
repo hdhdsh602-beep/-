@@ -46,4 +46,5 @@ export interface AppSettings {
   ttsRate: number;
   autoSpeak: boolean;
   trackingWaitTime: number; // in milliseconds (e.g. 1500ms)
+  screenOverlayTranslationEnabled: boolean; // enables the Android floating bubble OCR screen translation action
 }

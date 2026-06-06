@@ -14,6 +14,7 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
   const [pitch, setPitch] = useState(settings.ttsPitch);
   const [rate, setRate] = useState(settings.ttsRate);
   const [autoSpeak, setAutoSpeak] = useState(settings.autoSpeak);
+  const [screenOverlayTranslationEnabled, setScreenOverlayTranslationEnabled] = useState(settings.screenOverlayTranslationEnabled);
   const [testSuccess, setTestSuccess] = useState(false);
 
   // Gemini Advanced Option
@@ -26,10 +27,24 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
       ttsPitch: pitch,
       ttsRate: rate,
       autoSpeak,
-      trackingWaitTime: settings.trackingWaitTime
+      trackingWaitTime: settings.trackingWaitTime,
+      screenOverlayTranslationEnabled
     });
     setTestSuccess(true);
     setTimeout(() => setTestSuccess(false), 2500);
+  };
+
+  const handleScreenOverlayToggle = () => {
+    const nextValue = !screenOverlayTranslationEnabled;
+    setScreenOverlayTranslationEnabled(nextValue);
+    onSettingsChange({
+      ttsVoice: voice,
+      ttsPitch: pitch,
+      ttsRate: rate,
+      autoSpeak,
+      trackingWaitTime: settings.trackingWaitTime,
+      screenOverlayTranslationEnabled: nextValue
+    });
   };
 
   const handleTestTTS = () => {
@@ -212,6 +227,24 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
               </button>
             </div>
             
+
+
+            {/* Android floating bubble screen translation */}
+            <div className="flex items-center justify-between p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs font-bold text-stone-700">ترجمة الشاشة من الفقاعة العائمة</span>
+                <span className="text-[10px] text-stone-500 leading-relaxed">ضغطة طويلة أو ضغطتين على الفقاعة تلتقط لقطة واحدة فقط ثم OCR وترجمة عربية لتوفير البطارية.</span>
+              </div>
+              <button
+                type="button"
+                onClick={handleScreenOverlayToggle}
+                className={`w-12 h-6 rounded-full p-1 transition-all shrink-0 ${screenOverlayTranslationEnabled ? 'bg-blue-500' : 'bg-stone-300'}`}
+                aria-pressed={screenOverlayTranslationEnabled}
+                aria-label="تفعيل أو قفل ترجمة الشاشة من الفقاعة العائمة"
+              >
+                <div className={`w-4 h-4 rounded-full bg-white transition-all transform ${screenOverlayTranslationEnabled ? 'translate-x-0' : '-translate-x-6'}`} />
+              </button>
+            </div>
             {/* Quick Actions test */}
             <div className="flex gap-2 pt-3">
               <button
@@ -220,7 +253,7 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
                 className="flex-1 py-3 bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white font-bold rounded-xl text-xs transition-all shadow-md cursor-pointer flex items-center justify-center gap-1.5"
               >
                 <Check size={14} />
-                <span>حفظ التفضيلات الصوتية</span>
+                <span>حفظ التفضيلات</span>
               </button>
               
               <button

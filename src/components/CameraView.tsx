@@ -369,6 +369,7 @@ export default function CameraView({
   // Camera state
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [cameraStartNonce, setCameraStartNonce] = useState<number>(0);
   
   // Detection tracking State
   const [predictions, setPredictions] = useState<PredictionBox[]>([]);
@@ -980,6 +981,45 @@ export default function CameraView({
     };
   }, []);
 
+  const getCameraFailureMessage = (err: any) => {
+    if (!window.isSecureContext) {
+      return 'الكاميرا تحتاج رابط HTTPS آمن. افتح التطبيق من رابط Vercel الرسمي وليس رابط معاينة غير آمن.';
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return 'المتصفح الحالي لا يدعم تشغيل الكاميرا داخل التطبيق. جرّب Chrome أو Safari محدث.';
+    }
+
+    if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+      return 'تم رفض إذن الكاميرا. افتح إعدادات الموقع في المتصفح واسمح بالكاميرا ثم اضغط إعادة المحاولة.';
+    }
+
+    if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+      return 'لم يتم العثور على كاميرا متاحة على هذا الجهاز.';
+    }
+
+    if (err?.name === 'NotReadableError' || err?.name === 'TrackStartError') {
+      return 'الكاميرا مستخدمة في تطبيق آخر أو غير متاحة الآن. أغلق التطبيقات الأخرى ثم اضغط إعادة المحاولة.';
+    }
+
+    if (err?.name === 'OverconstrainedError' || err?.name === 'ConstraintNotSatisfiedError') {
+      return 'إعدادات الكاميرا الخلفية غير متاحة على جهازك. سنحاول تشغيل أي كاميرا متاحة.';
+    }
+
+    return 'لم نتمكن من الوصول للكاميرا. تأكد من منح الإذن للمتصفح ثم اضغط إعادة المحاولة.';
+  };
+
+  const bindStreamToVideo = async (mediaStream: MediaStream) => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.srcObject !== mediaStream) video.srcObject = mediaStream;
+    try {
+      await video.play();
+    } catch (err) {
+      console.warn("Video play error:", err);
+    }
+  };
+
   // 2. Camera Activation
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -988,20 +1028,46 @@ export default function CameraView({
     async function startCamera() {
       try {
         setCameraError(null);
-        const mediaStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-        });
+        setCameraFailed(false);
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('MEDIA_DEVICES_UNSUPPORTED');
+        }
+
+        const cameraProfiles: MediaStreamConstraints[] = [
+          { video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
+          { video: { facingMode: 'environment' }, audio: false },
+          { video: true, audio: false }
+        ];
+
+        let mediaStream: MediaStream | null = null;
+        let lastError: any = null;
+
+        for (const constraints of cameraProfiles) {
+          try {
+            mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+            break;
+          } catch (err: any) {
+            lastError = err;
+            console.warn('Camera profile failed:', constraints, err);
+          }
+        }
+
+        if (!mediaStream) throw lastError || new Error('CAMERA_START_FAILED');
+        if (!active) {
+          mediaStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+
         stream = mediaStream;
         streamRef.current = mediaStream;
-        if (videoRef.current && active) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(err => console.warn("Video play error:", err));
-          setCameraActive(true);
-        }
+        setCameraActive(true);
+        await bindStreamToVideo(mediaStream);
       } catch (err: any) {
         console.warn("Camera access denied or failed: ", err);
         if (active) {
-          setCameraError("لم نتمكن من الوصول للكاميرا. تأكد من منح الإذن للمتصفح ثم أعد تحميل الصفحة.");
+          setCameraActive(false);
+          setCameraError(getCameraFailureMessage(err));
           setCameraFailed(true);
         }
       }
@@ -1015,16 +1081,14 @@ export default function CameraView({
       streamRef.current = null;
       setCameraActive(false);
     };
-  }, []);
+  }, [cameraStartNonce]);
 
-  // Re-bind active stream to video element when view mode changes
+  // Re-bind active stream to video element when the camera view becomes visible or mode changes.
   useEffect(() => {
-    if (cameraActive && videoRef.current && streamRef.current) {
-      if (videoRef.current.srcObject !== streamRef.current)
-        videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(err => console.warn("Auto-play interrupted:", err));
+    if (cameraActive && streamRef.current) {
+      bindStreamToVideo(streamRef.current);
     }
-  }, [activeViewMode, cameraActive]);
+  }, [activeViewMode, cameraActive, modelLoading, cameraFailed]);
 
   // 3. Frame Processing and detection loop
   useEffect(() => {
@@ -1544,7 +1608,7 @@ export default function CameraView({
             <CameraOff size={48} className="text-red-400" />
             <h3 className="text-lg font-black">تعذّر تشغيل الكاميرا</h3>
             <p className="text-xs text-stone-300 max-w-sm leading-relaxed">{cameraError || 'يرجى منح إذن الكاميرا للمتصفح ثم إعادة تحميل الصفحة.'}</p>
-            <button onClick={() => { setCameraFailed(false); setCameraError(null); }} className="px-6 py-2.5 bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white rounded-2xl text-sm font-black cursor-pointer">إعادة المحاولة</button>
+            <button onClick={() => { setCameraFailed(false); setCameraError(null); setCameraStartNonce(prev => prev + 1); }} className="px-6 py-2.5 bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white rounded-2xl text-sm font-black cursor-pointer">إعادة المحاولة</button>
           </div>
         ) : (
           /* Real Live Camera — always direct */
