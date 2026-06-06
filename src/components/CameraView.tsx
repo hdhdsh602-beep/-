@@ -48,6 +48,67 @@ interface OCRPreset {
   }>;
 }
 
+
+const SMART_FRAME_INTERVAL_MS = 300;
+const LIVE_OCR_INTERVAL_MS = 2600;
+const TEXT_CONFIDENCE_THRESHOLD = 52;
+
+const BODYPIX_PART_LABELS: Record<number, 'face' | 'arm' | 'hand' | 'leg' | 'foot'> = {
+  0: 'face',
+  1: 'face',
+  2: 'arm',
+  3: 'arm',
+  4: 'arm',
+  5: 'arm',
+  6: 'hand',
+  7: 'hand',
+  8: 'arm',
+  9: 'arm',
+  10: 'arm',
+  11: 'arm',
+  12: 'hand',
+  13: 'hand',
+  14: 'leg',
+  15: 'leg',
+  16: 'leg',
+  17: 'leg',
+  18: 'foot',
+  19: 'foot',
+  20: 'leg',
+  21: 'leg',
+  22: 'leg',
+  23: 'leg'
+};
+
+const BODY_PART_PRIORITY: Record<string, number> = {
+  hand: 5,
+  face: 4,
+  foot: 3,
+  leg: 2,
+  arm: 1
+};
+
+const loadExternalScriptOnce = (src: string) => new Promise<void>((resolve, reject) => {
+  const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+  if (existing) {
+    if (existing.dataset.loaded === 'true') resolve();
+    else {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', reject, { once: true });
+    }
+    return;
+  }
+  const script = document.createElement('script');
+  script.src = src;
+  script.async = true;
+  script.onload = () => {
+    script.dataset.loaded = 'true';
+    resolve();
+  };
+  script.onerror = reject;
+  document.head.appendChild(script);
+});
+
 const OCR_PRESETS: OCRPreset[] = [
   {
     id: 'traffic_sign',
@@ -274,6 +335,7 @@ interface CameraViewProps {
   ttsPitch: number;
   ttsRate: number;
   autoSpeak: boolean;
+  initialMode?: 'objects' | 'ocr' | 'offline';
 }
 
 interface PredictionBox {
@@ -288,15 +350,21 @@ export default function CameraView({
   ttsVoice,
   ttsPitch,
   ttsRate,
-  autoSpeak
+  autoSpeak,
+  initialMode = 'objects'
 }: CameraViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const handposeModelRef = useRef<any>(null);
+  const bodyPixModelRef = useRef<any>(null);
+  const tesseractReadyRef = useRef<boolean>(false);
   
   // Model state
   const [modelLoading, setModelLoading] = useState<boolean>(true);
   const [modelReady, setModelReady] = useState<boolean>(false);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [visionBoostReady, setVisionBoostReady] = useState<boolean>(false);
+  const [liveOcrReady, setLiveOcrReady] = useState<boolean>(false);
   
   // Camera state
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -331,8 +399,12 @@ export default function CameraView({
   const [lowConfidenceWarning, setLowConfidenceWarning] = useState<boolean>(false);
   const [notAbleToIdentify, setNotAbleToIdentify] = useState<boolean>(false);
 
-  // Camera Active Mode Selector: 'objects' (Object Recognition) OR 'ocr' (Document Scan & Translate) OR 'offline' (Essential terms & offline models config)
-  const [activeViewMode, setActiveViewMode] = useState<'objects' | 'ocr' | 'offline'>('objects');
+  // Camera Active Mode Selector: 'objects' (Live Object Stream) OR 'ocr' (Document Scan & Translate) OR 'offline' (Essential terms & offline models config)
+  const [activeViewMode, setActiveViewMode] = useState<'objects' | 'ocr' | 'offline'>(initialMode);
+
+  useEffect(() => {
+    setActiveViewMode(initialMode);
+  }, [initialMode]);
 
   // Offline Mode States
   const [isOfflineModeActive, setIsOfflineModeActive] = useState<boolean>(() => {
@@ -372,6 +444,9 @@ export default function CameraView({
   
   // Track individually saved words from the AI-extracted vocabulary lesson cards
   const [savedVocabWords, setSavedVocabWords] = useState<Record<string, boolean>>({});
+  const liveOcrBusyRef = useRef<boolean>(false);
+  const lastLiveOcrFrameRef = useRef<number>(0);
+  const lastLiveOcrTextRef = useRef<string>('');
 
   // Synchronously cache words
   const handleCacheWords = () => {
@@ -662,14 +737,14 @@ export default function CameraView({
     }, 600);
   }, [ocrCustomText, isOfflineModeActive, onWordIdentified]);
 
-  // OCR Auto Scan Debouncer - automatically translates 1.5s after user stops typing
+  // Smart text debouncer - manual English text is translated without switching modes
   useEffect(() => {
-    if (activeViewMode !== 'ocr' || !ocrCustomText.trim()) return;
+    if (activeViewMode === 'offline' || !ocrCustomText.trim()) return;
     if (ocrScanning) return;
 
     const handler = setTimeout(() => {
       triggerOcrScan();
-    }, 1500);
+    }, 700);
 
     return () => clearTimeout(handler);
   }, [ocrCustomText, activeViewMode, ocrScanning, triggerOcrScan]);
@@ -683,9 +758,9 @@ export default function CameraView({
   const lastSpokenIdRef = useRef<string | null>(null);
   const spokenHistoryRef = useRef<Set<string>>(new Set<string>());
   const speechResetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  // Throttle: track last frame analysis timestamp (target: 1 FPS = 1000ms interval)
+  // Throttle: fast smart-glasses sampling without overlapping mobile inference
   const lastFrameTimeRef = useRef<number>(0);
-  const FRAME_INTERVAL_MS = 1000; // 1 FPS — prevents overheating
+  const FRAME_INTERVAL_MS = SMART_FRAME_INTERVAL_MS;
   // Track if a detection is already in-flight to prevent overlapping async calls
   const isDetectingRef = useRef<boolean>(false);
 
@@ -712,6 +787,119 @@ export default function CameraView({
     window.speechSynthesis.speak(utterance);
   };
 
+
+
+  const getBodyPartFromSegmentation = (segmentation: any, videoWidth: number, videoHeight: number): PredictionBox | null => {
+    if (!segmentation?.data || !segmentation.width || !segmentation.height) return null;
+
+    const sampleHalfWidth = Math.max(3, Math.floor(segmentation.width * 0.10));
+    const sampleHalfHeight = Math.max(3, Math.floor(segmentation.height * 0.10));
+    const centerX = Math.floor(segmentation.width / 2);
+    const centerY = Math.floor(segmentation.height / 2);
+    const counts: Record<string, number> = {};
+
+    for (let y = Math.max(0, centerY - sampleHalfHeight); y < Math.min(segmentation.height, centerY + sampleHalfHeight); y += 2) {
+      for (let x = Math.max(0, centerX - sampleHalfWidth); x < Math.min(segmentation.width, centerX + sampleHalfWidth); x += 2) {
+        const partId = segmentation.data[y * segmentation.width + x];
+        const label = BODYPIX_PART_LABELS[partId];
+        if (label) counts[label] = (counts[label] || 0) + 1;
+      }
+    }
+
+    const best = Object.entries(counts)
+      .filter(([, count]) => count >= 3)
+      .sort((a, b) => (b[1] + (BODY_PART_PRIORITY[b[0]] || 0)) - (a[1] + (BODY_PART_PRIORITY[a[0]] || 0)))[0];
+
+    if (!best) return null;
+    const boxSize = Math.min(videoWidth, videoHeight) * 0.36;
+    return {
+      class: best[0],
+      score: Math.min(0.97, 0.74 + best[1] / 180),
+      bbox: [videoWidth / 2 - boxSize / 2, videoHeight / 2 - boxSize / 2, boxSize, boxSize]
+    };
+  };
+
+  const getOpenSourceBodyDetections = async (video: HTMLVideoElement): Promise<PredictionBox[]> => {
+    const detections: PredictionBox[] = [];
+    const videoWidth = video.videoWidth || 640;
+    const videoHeight = video.videoHeight || 480;
+
+    if (handposeModelRef.current) {
+      try {
+        const hands = await handposeModelRef.current.estimateHands(video, false);
+        hands.forEach((hand: any) => {
+          const topLeft = hand?.boundingBox?.topLeft || hand?.topLeft;
+          const bottomRight = hand?.boundingBox?.bottomRight || hand?.bottomRight;
+          const x1 = Array.isArray(topLeft) ? topLeft[0] : topLeft?.[0];
+          const y1 = Array.isArray(topLeft) ? topLeft[1] : topLeft?.[1];
+          const x2 = Array.isArray(bottomRight) ? bottomRight[0] : bottomRight?.[0];
+          const y2 = Array.isArray(bottomRight) ? bottomRight[1] : bottomRight?.[1];
+          if ([x1, y1, x2, y2].every((v) => Number.isFinite(v))) {
+            detections.push({ class: 'hand', score: hand.handInViewConfidence || 0.92, bbox: [x1, y1, Math.max(32, x2 - x1), Math.max(32, y2 - y1)] });
+          }
+        });
+      } catch (err) {
+        console.warn('Handpose frame skipped:', err);
+      }
+    }
+
+    if (bodyPixModelRef.current) {
+      try {
+        const segmentation = await bodyPixModelRef.current.segmentPersonParts(video, {
+          flipHorizontal: false,
+          internalResolution: 'low',
+          segmentationThreshold: 0.55
+        });
+        const partDetection = getBodyPartFromSegmentation(segmentation, videoWidth, videoHeight);
+        if (partDetection) detections.push(partDetection);
+      } catch (err) {
+        console.warn('BodyPix frame skipped:', err);
+      }
+    }
+
+    return detections;
+  };
+
+  const processLiveTextFrame = async (video: HTMLVideoElement) => {
+    if (liveOcrBusyRef.current || !tesseractReadyRef.current) return;
+    liveOcrBusyRef.current = true;
+
+    try {
+      const canvas = document.createElement('canvas');
+      const scale = Math.min(1, 720 / Math.max(video.videoWidth || 640, video.videoHeight || 480));
+      canvas.width = Math.max(320, Math.floor((video.videoWidth || 640) * scale));
+      canvas.height = Math.max(240, Math.floor((video.videoHeight || 480) * scale));
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.filter = 'contrast(1.25) grayscale(1)';
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const Tesseract = (window as any).Tesseract;
+      if (!Tesseract?.recognize) return;
+      const { data } = await Tesseract.recognize(canvas, 'eng');
+      const confidence = Number(data?.confidence || 0);
+      const text = String(data?.text || '').replace(/\s+/g, ' ').trim();
+      if (confidence < TEXT_CONFIDENCE_THRESHOLD || !/[a-zA-Z]{2,}/.test(text) || text.length < 3) return;
+      if (text.toLowerCase() === lastLiveOcrTextRef.current.toLowerCase()) return;
+
+      lastLiveOcrTextRef.current = text;
+      const translated = handleTranslateCustomText(text);
+      setOcrCustomText(text);
+      setOcrResult({
+        ...translated,
+        title: 'ترجمة شارع فورية من البث',
+        category: `قراءة نص حي من الكاميرا (${Math.round(confidence)}%)`
+      });
+      setOcrScanStage(4);
+      onWordIdentified(text);
+      if (autoSpeak) speakArabic(translated.arabic);
+    } catch (err) {
+      console.warn('Live OCR frame skipped:', err);
+    } finally {
+      liveOcrBusyRef.current = false;
+    }
+  };
+
   // 1. Initial Load: TensorFlow.js & COCO-SSD loaded from index.html (with resilience ticks)
   useEffect(() => {
     let active = true;
@@ -719,15 +907,11 @@ export default function CameraView({
       try {
         if (active) setModelLoading(true);
         
-        // Wait up to 15 seconds for head script tags to finish rendering/loading
+        // Wait shortly for head script tags; then fall back to jsDelivr open-source bundles.
         const waitForGlobals = async (ticks = 0): Promise<any> => {
           const windowAny = window as any;
-          if (windowAny.cocoSsd && windowAny.tf) {
-            return windowAny.cocoSsd;
-          }
-          if (ticks > 75) { // 15 seconds
-            throw new Error("لم نتمكن من الوصول لمكتبة تصنيف الرؤية البصرية COCO-SSD في المتصفح.");
-          }
+          if (windowAny.cocoSsd && windowAny.tf) return windowAny.cocoSsd;
+          if (ticks > 25) return null;
           await new Promise((resolve) => setTimeout(resolve, 200));
           if (!active) return null;
           return waitForGlobals(ticks + 1);
@@ -735,33 +919,51 @@ export default function CameraView({
 
         let cocoSsd = await waitForGlobals();
 
-        // Fallback: load TF + COCO-SSD dynamically if CDN scripts didn't inject globals
         if (!cocoSsd) {
-          const loadScript = (src: string) => new Promise<void>((resolve, reject) => {
-            const s = document.createElement('script');
-            s.src = src;
-            s.onload = () => resolve();
-            s.onerror = reject;
-            document.head.appendChild(s);
-          });
-          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
-          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
+          await loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js');
+          await loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js');
           cocoSsd = (window as any).cocoSsd;
         }
 
         if (!active || !cocoSsd) return;
 
-        const loadedModel = await cocoSsd.load();
+        const loadedModel = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
         if (active) {
           modelRef.current = loadedModel;
           setModelReady(true);
-          console.log("TensorFlow & COCO-SSD initialized successfully from head script");
+          console.log("TensorFlow & COCO-SSD initialized successfully");
         }
+
+        Promise.allSettled([
+          loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow-models/handpose@0.1.0/dist/handpose.min.js')
+            .then(async () => {
+              const handpose = (window as any).handpose;
+              if (handpose?.load) handposeModelRef.current = await handpose.load();
+            }),
+          loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow-models/body-pix@2.2.0/dist/body-pix.min.js')
+            .then(async () => {
+              const bodyPix = (window as any).bodyPix;
+              if (bodyPix?.load) {
+                bodyPixModelRef.current = await bodyPix.load({
+                  architecture: 'MobileNetV1',
+                  outputStride: 16,
+                  multiplier: 0.50,
+                  quantBytes: 2
+                });
+              }
+            }),
+          loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js')
+            .then(() => {
+              tesseractReadyRef.current = !!(window as any).Tesseract;
+              if (active) setLiveOcrReady(tesseractReadyRef.current);
+            })
+        ]).then(() => {
+          if (active) setVisionBoostReady(!!handposeModelRef.current || !!bodyPixModelRef.current);
+        });
       } catch (err: any) {
         console.error("Error loading TF models: ", err);
         if (active) {
           setModelError(err.message || 'فشل تحميل محرك الذكاء الاصطناعي المحلي.');
-          setCameraFailed(true);
         }
       } finally {
         if (active) setModelLoading(false);
@@ -805,7 +1007,7 @@ export default function CameraView({
       }
     }
 
-    if (modelReady) startCamera();
+    startCamera();
 
     return () => {
       active = false;
@@ -813,7 +1015,7 @@ export default function CameraView({
       streamRef.current = null;
       setCameraActive(false);
     };
-  }, [modelReady]);
+  }, []);
 
   // Re-bind active stream to video element when view mode changes
   useEffect(() => {
@@ -826,7 +1028,7 @@ export default function CameraView({
 
   // 3. Frame Processing and detection loop
   useEffect(() => {
-    if (!modelReady || !cameraActive || !videoRef.current || activeViewMode !== 'objects') {
+    if (!cameraActive || !videoRef.current || activeViewMode !== 'objects') {
       setPredictions([]);
       setFocusedObject(null);
       setFocusProgress(0);
@@ -856,10 +1058,19 @@ export default function CameraView({
       isDetectingRef.current = true;
 
       try {
-        if (modelRef.current) {
-          // Offload heavy TF inference off the hot animation path
-          // detect() returns a Promise — we await it so the main thread stays free
-          const results: any[] = await modelRef.current.detect(videoRef.current);
+        {
+          const video = videoRef.current;
+          if (!video) { isDetectingRef.current = false; return; }
+
+          if (liveOcrReady && now - lastLiveOcrFrameRef.current > LIVE_OCR_INTERVAL_MS) {
+            lastLiveOcrFrameRef.current = now;
+            processLiveTextFrame(video);
+          }
+
+          // Offload heavy TF inference off the hot animation path. Extra open-source models fill body-part gaps.
+          let results: any[] = modelRef.current ? await modelRef.current.detect(video) : [];
+          const bodyDetections = await getOpenSourceBodyDetections(video);
+          results = [...bodyDetections, ...results];
           
           // --- MEMORY MANAGEMENT: dispose intermediate tensors kept by TF.js ---
           const tf = (window as any).tf;
@@ -868,8 +1079,6 @@ export default function CameraView({
             tf.engine().startScope();
           }
 
-          const video = videoRef.current;
-          if (!video) { isDetectingRef.current = false; return; } // guard unmount
           const videoWidth = video.videoWidth || 640;
           const videoHeight = video.videoHeight || 480;
           const centerX = videoWidth / 2;
@@ -1188,23 +1397,18 @@ export default function CameraView({
   return (
     <div className="w-full flex flex-col gap-5" dir="rtl">
 
-      {/* Mode Tabs */}
-      <div className="flex flex-col sm:flex-row bg-stone-200/70 p-1.5 rounded-[24px] border border-stone-200/40 w-full max-w-4xl mx-auto z-10 shadow-sm gap-1">
-        {(['objects', 'ocr', 'offline'] as const).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => setActiveViewMode(mode)}
-            className={`flex-1 flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none ${
-              activeViewMode === mode
-                ? mode === 'offline' ? 'bg-amber-600 text-white shadow-md' : 'bg-[#8a9a5b] text-white shadow-md'
-                : 'text-stone-600 hover:text-stone-900 hover:bg-white/40'
-            }`}
-          >
-            {mode === 'objects' && <><Scan size={16} /><span>رصد وتتبع الكائنات</span></>}
-            {mode === 'ocr' && <><FileText size={16} /><span>مسح وترجمة النصوص</span></>}
-            {mode === 'offline' && <><WifiOff size={16} /><span>حقيبة التعلم بدون إنترنت (50 كلمة) 🔌</span></>}
-          </button>
-        ))}
+      {/* Unified Smart Scan Mode */}
+      <div className="bg-stone-200/70 p-1.5 rounded-[24px] border border-stone-200/40 w-full max-w-4xl mx-auto z-10 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setActiveViewMode('objects')}
+          className="w-full flex items-center justify-center gap-2.5 py-3 px-5 rounded-2xl text-[13px] font-black transition-all cursor-pointer select-none bg-[#8a9a5b] text-white shadow-md"
+        >
+          <Scan size={16} />
+          <span>مساعد ذكي: رصد المجسمات + ترجمة النصوص</span>
+          {visionBoostReady && <span className="text-[9px] bg-white/15 px-2 py-0.5 rounded-full">Handpose + BodyPix</span>}
+          {liveOcrReady && <span className="text-[9px] bg-white/15 px-2 py-0.5 rounded-full">OCR حي</span>}
+        </button>
       </div>
 
       {/* Main Viewport */}
@@ -1329,11 +1533,11 @@ export default function CameraView({
               </div>
             </div>
           </div>
-        ) : modelLoading ? (
+        ) : modelLoading && !cameraActive ? (
           <div className="absolute inset-0 bg-stone-900/95 flex flex-col items-center justify-center text-white z-50 p-6 text-center">
             <Loader2 className="animate-spin text-[#8a9a5b] mb-4" size={48} />
             <h3 className="text-lg font-black mb-2">جاري تشغيل محرك الذكاء الاصطناعي المحلي...</h3>
-            <p className="text-xs text-stone-300 max-w-sm leading-relaxed">نقوم بتحميل مكتبة تصنيف الرؤية لتعمل بالكامل في نظارتك الذكية..</p>
+            <p className="text-xs text-stone-300 max-w-sm leading-relaxed">نقوم بتحميل COCO-SSD وHandpose وBodyPix وOCR مفتوح المصدر لتعمل بسرعة داخل المتصفح..</p>
           </div>
         ) : cameraFailed ? (
           <div className="absolute inset-0 bg-stone-900/95 flex flex-col items-center justify-center text-white z-50 p-6 text-center gap-4">
@@ -1384,7 +1588,7 @@ export default function CameraView({
                     <div className="bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/5">
                       <p className="text-white text-[11px] font-semibold flex items-center gap-1">
                         <Eye size={12} className="text-[#8a9a5b]" />
-                        <span>وجه الكاميرا أو ثبّت نظرك على كائن بالوسط...</span>
+                        <span>تابع البث أو ثبّت نظرك على كائن بالوسط...</span>
                       </p>
                     </div>
                   )}
@@ -1405,6 +1609,8 @@ export default function CameraView({
                 <span>باقات الأوفلاين نشطة 🔌</span>
               </span>
             )}
+            <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-xl border ${visionBoostReady ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-stone-50 text-stone-400 border-stone-200'}`}>أجزاء الجسم {visionBoostReady ? 'مفعّلة' : 'قيد التحميل'}</span>
+            <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-xl border ${liveOcrReady ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-stone-50 text-stone-400 border-stone-200'}`}>قراءة اللافتات {liveOcrReady ? 'مفعّلة' : 'قيد التحميل'}</span>
           </div>
           <div className="flex flex-wrap items-center gap-3.5">
             {activeViewMode === 'objects' && (
@@ -1419,17 +1625,17 @@ export default function CameraView({
                   }`}
                 >
                   <SlidersHorizontal size={13} />
-                  <span>إعدادات الرصد</span>
+                  <span>إعدادات البث</span>
                   {spokenCount > 0 && (
                     <span className="bg-amber-400 text-amber-900 text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center">{spokenCount}</span>
                   )}
                 </button>
               </>
             )}
-            {activeViewMode === 'ocr' && (
+            {activeViewMode === 'objects' && (
               <button onClick={triggerOcrScan} disabled={ocrScanning || !ocrCustomText.trim()}
                 className={`px-4 py-1.5 rounded-xl flex items-center gap-1.5 text-xs font-black cursor-pointer border ${ocrScanning ? 'bg-stone-800 text-white cursor-not-allowed border-stone-900' : !ocrCustomText.trim() ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed' : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white border-[#8a9a5b]'}`}>
-                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>جاري الترجمة...</span></> : <><Scan size={13} /><span>تحليل ليزري للعدسة المترجمة</span></>}
+                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>جاري الترجمة...</span></> : <><Scan size={13} /><span>ترجمة النص الآن</span></>}
               </button>
             )}
           </div>
@@ -1440,7 +1646,7 @@ export default function CameraView({
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-black text-stone-500 flex items-center gap-1.5">
                 <SlidersHorizontal size={12} className="text-[#8a9a5b]" />
-                إعدادات الرصد والتتبع
+                إعدادات البث والتتبع
               </span>
               <button type="button" onClick={() => setShowDetectionSettings(false)} className="p-1 hover:bg-stone-100 rounded-lg text-stone-400 cursor-pointer">
                 <X size={13} />
@@ -1451,7 +1657,7 @@ export default function CameraView({
               <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
                 <div className="flex flex-col">
                   <span className="text-[11px] font-black text-stone-700">تصفية العين</span>
-                  <span className="text-[9px] text-stone-400">{glassesFilterMode === 'gaze' ? 'رصد أقرب كائن للوسط فقط' : 'رصد جميع الكائنات'}</span>
+                  <span className="text-[9px] text-stone-400">{glassesFilterMode === 'gaze' ? 'بث أقرب كائن للوسط فقط' : 'بث جميع الكائنات'}</span>
                 </div>
                 <button type="button" onClick={() => setGlassesFilterMode(glassesFilterMode === 'gaze' ? 'radar' : 'gaze')}
                   className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all ${
@@ -1485,7 +1691,7 @@ export default function CameraView({
               <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
                 <div className="flex flex-col">
                   <span className="text-[11px] font-black text-stone-700">مربعات التركيز</span>
-                  <span className="text-[9px] text-stone-400">إطار أركان + اهتزاز لحظة الرصد</span>
+                  <span className="text-[9px] text-stone-400">إطار أركان + اهتزاز لحظة البث</span>
                 </div>
                 <button type="button" onClick={() => setAutoFocusEnabled(!autoFocusEnabled)}
                   className={`px-2.5 py-1 rounded-lg text-[10px] font-black cursor-pointer transition-all ${
@@ -1497,7 +1703,7 @@ export default function CameraView({
               {/* Accuracy threshold */}
               <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
                 <div className="flex flex-col">
-                  <span className="text-[11px] font-black text-stone-700">دقة الكاميرا</span>
+                  <span className="text-[11px] font-black text-stone-700">دقة البث</span>
                   <span className="text-[9px] text-stone-400">حد أدنى لثقة الذكاء الاصطناعي</span>
                 </div>
                 <div className="flex items-center gap-1">
@@ -1516,21 +1722,21 @@ export default function CameraView({
           </div>
         )}
 
-        {activeViewMode === 'ocr' && (
+        {activeViewMode === 'objects' && (
           <div className="border-t border-stone-100 pt-3 flex flex-col gap-1.5">
             <div className="flex justify-between items-center px-1">
-              <span className="text-[10px] font-black text-stone-400">لوحة مدخلات المسح الليزري</span>
-              <span className="text-[9px] text-stone-400">الترجمة تفاعلية بالذكاء الاصطناعي</span>
+              <span className="text-[10px] font-black text-stone-400">مدخل النص الذكي أو النص المقروء من البث</span>
+              <span className="text-[9px] text-stone-400">يفصل تلقائياً بين المجسمات والكلام الإنجليزي</span>
             </div>
             <textarea value={ocrCustomText} onChange={(e) => setOcrCustomText(e.target.value)}
-              placeholder="أدخل أي جملة أو لافتة أو فقرة بالإنجليزية هنا لتقوم العدسة بترجمتها فوراً..."
+              placeholder="اكتب نصاً إنجليزياً أو اترك الكاميرا تقرأ اللافتات تلقائياً..."
               className="w-full text-xs p-3 border border-stone-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#8a9a5b] bg-stone-50 text-stone-800 resize-none h-16 shadow-inner" />
           </div>
         )}
       </div>
 
       {/* Results panel */}
-      {activeViewMode === 'ocr' ? (
+      {ocrResult ? (
         <div className="bg-white p-6 rounded-[32px] border border-stone-200 shadow-sm animate-in fade-in duration-300 text-right">
           <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-5 pb-5 border-b border-stone-100">
             <div className="flex-1 flex flex-col gap-1">
@@ -1540,7 +1746,7 @@ export default function CameraView({
                 </span>
                 {ocrResult && <span className="text-[10px] bg-sky-50 text-sky-700 px-2 py-0.5 rounded-lg font-black flex items-center gap-1"><CheckCircle size={10} />تم التثبيت</span>}
               </div>
-              <h3 className="text-xl font-black text-stone-900 mt-2">{ocrResult ? ocrResult.title : 'في انتظار بدء مسح الورقة...'}</h3>
+              <h3 className="text-xl font-black text-stone-900 mt-2">{ocrResult.title}</h3>
             </div>
             {ocrResult && (
               <div className="flex flex-wrap gap-2.5 shrink-0">
@@ -1551,17 +1757,20 @@ export default function CameraView({
                   className={`flex-1 lg:flex-initial px-5 py-3 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 cursor-pointer ${ocrSaved ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' : 'bg-[#8a9a5b] hover:bg-[#7a8a4b] text-white shadow-md'}`}>
                   {ocrSaved ? <><BookmarkCheck size={16} /><span>محفوظ</span></> : <>{savingOcrDoc ? <Loader2 size={16} className="animate-spin" /> : <Bookmark size={16} />}<span>حفظ بالقاموس</span></>}
                 </button>
+                <button onClick={() => { setOcrResult(null); setOcrCustomText(''); }} className="flex-1 lg:flex-initial px-4 py-3 bg-stone-50 hover:bg-stone-100 rounded-2xl cursor-pointer flex items-center justify-center gap-2 font-bold text-xs text-stone-500 border border-stone-200">
+                  <X size={15} /><span>إخفاء الترجمة</span>
+                </button>
               </div>
             )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
             <div className="bg-stone-50 p-4 rounded-2xl border border-stone-100">
               <span className="text-[10px] font-black text-stone-400 block uppercase mb-1">المصدر بالإنجليزية:</span>
-              <p className="text-sm font-semibold font-serif text-stone-800 leading-relaxed text-left" dir="ltr">{ocrResult ? ocrResult.english : (ocrCustomText || 'أدخل نصاً بالإنجليزية للبدء...')}</p>
+              <p className="text-sm font-semibold font-serif text-stone-800 leading-relaxed text-left" dir="ltr">{ocrResult.english}</p>
             </div>
             <div className="bg-[#8a9a5b]/5 p-4 rounded-2xl border border-[#8a9a5b]/10">
               <span className="text-[10px] font-black text-[#6a7a3b] block uppercase mb-1">الترجمة العربية:</span>
-              <p className="text-sm font-extrabold text-stone-950 leading-relaxed">{ocrResult ? ocrResult.arabic : 'اضغط المسح لبدء الترجمة...'}</p>
+              <p className="text-sm font-extrabold text-stone-950 leading-relaxed">{ocrResult.arabic}</p>
             </div>
           </div>
           {ocrResult?.grammarTip && (
@@ -1648,7 +1857,7 @@ export default function CameraView({
             <div className="flex flex-col items-center max-w-xl">
               <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center text-amber-600 border border-amber-200/50 mb-3 animate-pulse"><Scan size={22} /></div>
               <h4 className="text-amber-800 font-black text-sm mb-1">🔍 تم رصد إشارة غير واضحة</h4>
-              <p className="text-xs text-stone-600 font-bold max-w-lg">مستوى دقة الكاميرا ({accuracyThreshold * 100}%) لم يستطع الجزم بهوية الشيء. قرّب الكاميرا أو حسّن الإضاءة.</p>
+              <p className="text-xs text-stone-600 font-bold max-w-lg">مستوى دقة البث ({accuracyThreshold * 100}%) لم يستطع الجزم بهوية الشيء. قرّب الكاميرا أو حسّن الإضاءة.</p>
             </div>
           ) : notAbleToIdentify ? (
             <div className="flex flex-col items-center max-w-xl">
@@ -1673,7 +1882,7 @@ export default function CameraView({
           <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold uppercase tracking-widest">النطق</span><span className="font-black text-sm text-[#8a9a5b]">مفعل (Speech Synthesis)</span></div>
         </div>
         <div className="flex items-center gap-4 text-[#8a9a5b] font-medium text-xs">
-          <span>وجه الكاميرا للكائنات لتتعلم مفرداتها فوراً.</span>
+          <span>افتح بث الكائنات لتتعلم مفرداتها فوراً.</span>
         </div>
       </footer>
     </div>

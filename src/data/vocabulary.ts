@@ -16,6 +16,55 @@ export const VOCABULARY_MAP: Record<string, VocabularyMeta> = {
     exampleEn: "Every person has a unique voice.",
     exampleAr: "لكل شخص صوت فريد من نوعه."
   },
+
+  hand: {
+    english: "Hand",
+    arabic: "يد",
+    phonetics: "/hænd/",
+    category: "أجزاء الجسم",
+    exampleEn: "Raise your hand when you need help.",
+    exampleAr: "ارفع يدك عندما تحتاج إلى مساعدة."
+  },
+  arm: {
+    english: "Arm",
+    arabic: "ذراع",
+    phonetics: "/ɑːrm/",
+    category: "أجزاء الجسم",
+    exampleEn: "The arm is used to carry and reach things.",
+    exampleAr: "يُستخدم الذراع لحمل الأشياء والوصول إليها."
+  },
+  leg: {
+    english: "Leg",
+    arabic: "رِجل / ساق",
+    phonetics: "/leɡ/",
+    category: "أجزاء الجسم",
+    exampleEn: "The leg helps a person walk and stand.",
+    exampleAr: "تساعد الرِجل الإنسان على المشي والوقوف."
+  },
+  foot: {
+    english: "Foot",
+    arabic: "قدم",
+    phonetics: "/fʊt/",
+    category: "أجزاء الجسم",
+    exampleEn: "The foot touches the ground while walking.",
+    exampleAr: "تلامس القدم الأرض أثناء المشي."
+  },
+  face: {
+    english: "Face",
+    arabic: "وجه",
+    phonetics: "/feɪs/",
+    category: "أجزاء الجسم",
+    exampleEn: "The face shows emotion clearly.",
+    exampleAr: "يُظهر الوجه المشاعر بوضوح."
+  },
+  head: {
+    english: "Head",
+    arabic: "رأس",
+    phonetics: "/hed/",
+    category: "أجزاء الجسم",
+    exampleEn: "The head is above the neck.",
+    exampleAr: "يقع الرأس فوق الرقبة."
+  },
   bicycle: {
     english: "Bicycle",
     arabic: "دراجة هوائية",

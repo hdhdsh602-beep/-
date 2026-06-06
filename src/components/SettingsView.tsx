@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { AppSettings } from '../types';
-import { Volume2, Settings, Sparkles, HelpCircle, Check, ShieldCheck } from 'lucide-react';
+import { Volume2, Settings, Sparkles, HelpCircle, Check, ShieldCheck, Briefcase, Radio, WifiOff, ArrowLeft, FileText } from 'lucide-react';
 
 interface SettingsViewProps {
   settings: AppSettings;
   onSettingsChange: (settings: AppSettings) => void;
+  onOpenOfflineKit: () => void;
+  onOpenLiveStream: () => void;
 }
 
-export default function SettingsView({ settings, onSettingsChange }: SettingsViewProps) {
+export default function SettingsView({ settings, onSettingsChange, onOpenOfflineKit, onOpenLiveStream }: SettingsViewProps) {
   const [voice, setVoice] = useState(settings.ttsVoice);
   const [pitch, setPitch] = useState(settings.ttsPitch);
   const [rate, setRate] = useState(settings.ttsRate);
@@ -56,12 +58,63 @@ export default function SettingsView({ settings, onSettingsChange }: SettingsVie
       {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center p-6 bg-white rounded-3xl border border-stone-200 shadow-sm gap-4">
         <div>
-          <h2 className="text-2xl font-black text-stone-900">إعدادات النطق والمساعد</h2>
-          <p className="text-xs text-stone-500 font-medium">خصّص سرعة ونبرة الصوت، جرب اللكنات المختلفة، أو أضف مفتاح ذكاء اصطناعي مخصص.</p>
+          <h2 className="text-2xl font-black text-stone-900">إعدادات الكفاءة والمساعد</h2>
+          <p className="text-xs text-stone-500 font-medium">خصّص الصوت، وافتح أزرار البث والأوفلاين من هنا لتقليل ازدحام شاشة البث.</p>
         </div>
         <div className="flex items-center gap-1.5 text-[#5a6a3b] font-bold text-xs bg-[#8a9a5b]/10 px-3 py-1.5 rounded-full">
           <Settings size={14} />
-          <span>مركز التحكم والتخصيص</span>
+          <span>مركز التحكم الخفيف</span>
+        </div>
+      </div>
+
+
+
+      {/* Distraction-free quick actions moved from the live stream screen */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <button
+          type="button"
+          onClick={onOpenOfflineKit}
+          className="group bg-[#15130f] hover:bg-[#211d16] text-white p-5 rounded-3xl border border-amber-500/25 shadow-sm transition-all cursor-pointer flex items-center justify-between gap-4 text-right"
+          title="فتح حقيبة التعلم بدون إنترنت"
+        >
+          <span className="flex items-center gap-3 min-w-0">
+            <span className="w-11 h-11 rounded-2xl bg-amber-500/15 border border-amber-500/25 text-amber-400 flex items-center justify-center shrink-0">
+              <Briefcase size={20} />
+            </span>
+            <span className="flex flex-col min-w-0">
+              <span className="text-sm font-black truncate">حقيبة التعلم بدون إنترنت</span>
+              <span className="text-[10px] text-stone-400 font-bold flex items-center gap-1"><WifiOff size={10} /> 50 كلمة جاهزة محلياً</span>
+            </span>
+          </span>
+          <ArrowLeft size={15} className="text-amber-400 group-hover:-translate-x-1 transition-transform shrink-0" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenLiveStream}
+          className="group bg-white hover:bg-stone-50 p-5 rounded-3xl border border-stone-200 shadow-sm transition-all cursor-pointer flex items-center justify-between gap-4 text-right"
+          title="الرجوع إلى البث المباشر"
+        >
+          <span className="flex items-center gap-3 min-w-0">
+            <span className="w-11 h-11 rounded-2xl bg-[#8a9a5b]/10 border border-[#8a9a5b]/20 text-[#6f7f45] flex items-center justify-center shrink-0">
+              <Radio size={20} />
+            </span>
+            <span className="flex flex-col min-w-0">
+              <span className="text-sm font-black text-stone-850 truncate">البث المباشر</span>
+              <span className="text-[10px] text-stone-400 font-bold">بديل الكاميرا والرصد</span>
+            </span>
+          </span>
+          <ArrowLeft size={15} className="text-[#8a9a5b] group-hover:-translate-x-1 transition-transform shrink-0" />
+        </button>
+
+        <div className="bg-white p-5 rounded-3xl border border-stone-200 shadow-sm flex items-center gap-3 text-right">
+          <span className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-100 text-blue-500 flex items-center justify-center shrink-0">
+            <FileText size={20} />
+          </span>
+          <span className="flex flex-col">
+            <span className="text-sm font-black text-stone-850">المساعدة المختصرة</span>
+            <span className="text-[10px] text-stone-400 font-bold leading-relaxed">الأزرار الثقيلة انتقلت هنا، وشاشة البث بقيت أخف وأوضح.</span>
+          </span>
         </div>
       </div>
 
@@ -238,10 +291,10 @@ export default function SettingsView({ settings, onSettingsChange }: SettingsVie
           <span>استكشاف طريقة عمل التقنيات المدمجة</span>
         </h3>
         <p className="text-xs text-stone-605 leading-relaxed font-semibold">
-          1. <strong className="text-stone-850">التعرف على الأشياء (Object Detection):</strong> يستخدم التطبيق خوارزميات الذكاء الاصطناعي خفيفة الحجم التي تعمل داخل الهاتف أو الحاسوب (Client-Side Tensorflow.js Model). يقوم النموذج بتحليل الصورة فريم بفريم بحدود (30 فريم بالثانية) لتصنيف الكائنات بدقة دون الحاجة لأي خوادم سحابية مدفوعة.
+          1. <strong className="text-stone-850">بث الأشياء (Live Object Stream):</strong> يستخدم التطبيق خوارزميات الذكاء الاصطناعي خفيفة الحجم التي تعمل داخل الهاتف أو الحاسوب (Client-Side Tensorflow.js Model). يقوم النموذج بتحليل عينات خفيفة من البث لتقليل التشتيت واستهلاك البطارية لتصنيف الكائنات بدقة دون الحاجة لأي خوادم سحابية مدفوعة.
         </p>
         <p className="text-xs text-stone-605 leading-relaxed font-semibold mt-2">
-          2. <strong className="text-stone-850">تثبيت وتتبع النظر (Gaze Tracker):</strong> عند النظر والتركيز على جسم بالوسط لمدة 1.2 ثانية، يفسر التطبيق ذلك على أنه رغبة في دراسة هذا الجسم، فيقوم بتثبيت القراءة تلقائياً ونسخ المفردة الإنكليزية والترجمة العربية لها.
+          2. <strong className="text-stone-850">تثبيت البث وتتبع النظر (Stream Focus):</strong> عند النظر والتركيز على جسم بالوسط لمدة 1.2 ثانية، يفسر التطبيق ذلك على أنه رغبة في دراسة هذا الجسم، فيقوم بتثبيت القراءة تلقائياً ونسخ المفردة الإنكليزية والترجمة العربية لها.
         </p>
         <p className="text-xs text-stone-605 leading-relaxed font-semibold mt-2">
           3. <strong className="text-stone-850">تحفيز النطق المباشر:</strong> من خلال دمج تقنيات النطق القياسية بالمتصفح، يتم قراءة الكلمات باللكنة الإنكليزية بوضوح تام، مما يعزز مهارات الاستماع والتهجئة الصحيحة.
