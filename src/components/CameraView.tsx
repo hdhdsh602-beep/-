@@ -49,9 +49,13 @@ interface OCRPreset {
 }
 
 
-const SMART_FRAME_INTERVAL_MS = 300;
+const SMART_FRAME_INTERVAL_MS = 180;
 const LIVE_OCR_INTERVAL_MS = 2600;
 const TEXT_CONFIDENCE_THRESHOLD = 52;
+const CENTER_SCAN_RATIO = 0.58;
+const CENTER_POINT_HIT_RADIUS_PX = 34;
+const CENTER_FOCUS_LOCK_MS = 520;
+const FOCUS_PROGRESS_STEP_MS = 52;
 
 const BODYPIX_PART_LABELS: Record<number, 'face' | 'arm' | 'hand' | 'leg' | 'foot'> = {
   0: 'face',
@@ -395,7 +399,7 @@ export default function CameraView({
   // Precision Calibration & Fallback Advisor states (to handle user requests on hand/person inaccuracy)
   const [accuracyThreshold, setAccuracyThreshold] = useState<number>(() => {
     const saved = localStorage.getItem('lingolens_accuracy_threshold');
-    return saved ? parseFloat(saved) : 0.65;
+    return saved ? parseFloat(saved) : 0.50;
   });
   const [lowConfidenceWarning, setLowConfidenceWarning] = useState<boolean>(false);
   const [notAbleToIdentify, setNotAbleToIdentify] = useState<boolean>(false);
@@ -820,6 +824,34 @@ export default function CameraView({
     };
   };
 
+  const getCenterScanFrame = (video: HTMLVideoElement) => {
+    const videoWidth = video.videoWidth || 640;
+    const videoHeight = video.videoHeight || 480;
+    const scanSize = Math.max(192, Math.floor(Math.min(videoWidth, videoHeight) * CENTER_SCAN_RATIO));
+    const sourceX = Math.max(0, Math.floor((videoWidth - scanSize) / 2));
+    const sourceY = Math.max(0, Math.floor((videoHeight - scanSize) / 2));
+    const canvas = document.createElement('canvas');
+    canvas.width = scanSize;
+    canvas.height = scanSize;
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    if (!ctx) {
+      return { source: video, offsetX: 0, offsetY: 0, scanWidth: videoWidth, scanHeight: videoHeight };
+    }
+
+    ctx.drawImage(video, sourceX, sourceY, scanSize, scanSize, 0, 0, scanSize, scanSize);
+    return { source: canvas, offsetX: sourceX, offsetY: sourceY, scanWidth: scanSize, scanHeight: scanSize };
+  };
+
+  const mapCenterScanDetectionToVideo = (prediction: any, offsetX: number, offsetY: number): PredictionBox => {
+    const [x, y, w, h] = prediction.bbox;
+    return {
+      class: String(prediction.class || '').toLowerCase(),
+      score: Number(prediction.score || 0),
+      bbox: [x + offsetX, y + offsetY, w, h]
+    };
+  };
+
   const getOpenSourceBodyDetections = async (video: HTMLVideoElement): Promise<PredictionBox[]> => {
     const detections: PredictionBox[] = [];
     const videoWidth = video.videoWidth || 640;
@@ -1120,6 +1152,7 @@ export default function CameraView({
 
       lastFrameTimeRef.current = now;
       isDetectingRef.current = true;
+      let tfScopeStarted = false;
 
       try {
         {
@@ -1131,22 +1164,30 @@ export default function CameraView({
             processLiveTextFrame(video);
           }
 
-          // Offload heavy TF inference off the hot animation path. Extra open-source models fill body-part gaps.
-          let results: any[] = modelRef.current ? await modelRef.current.detect(video) : [];
-          const bodyDetections = await getOpenSourceBodyDetections(video);
-          results = [...bodyDetections, ...results];
-          
-          // --- MEMORY MANAGEMENT: dispose intermediate tensors kept by TF.js ---
-          const tf = (window as any).tf;
-          if (tf && tf.engine) {
-            // Purge any unreferenced tensors accumulated during this inference cycle
-            tf.engine().startScope();
-          }
-
           const videoWidth = video.videoWidth || 640;
           const videoHeight = video.videoHeight || 480;
           const centerX = videoWidth / 2;
           const centerY = videoHeight / 2;
+          const tf = (window as any).tf;
+          if (tf?.engine) {
+            tf.engine().startScope();
+            tfScopeStarted = true;
+          }
+
+          // Center-point inference: crop the hot path to the reticle area instead of scanning the full frame.
+          // This keeps crowded scenes fast and makes the object under the middle dot the primary result.
+          const centerScan = getCenterScanFrame(video);
+          const centerResults = modelRef.current
+            ? await modelRef.current.detect(centerScan.source)
+            : [];
+          let results: any[] = centerResults.map((prediction: any) => mapCenterScanDetectionToVideo(prediction, centerScan.offsetX, centerScan.offsetY));
+
+          // Run expensive body/hand helpers only when COCO has no usable center candidate.
+          const hasUsableCenterResult = results.some((p: any) => p.score >= accuracyThreshold);
+          if (!hasUsableCenterResult) {
+            const bodyDetections = await getOpenSourceBodyDetections(video);
+            results = [...bodyDetections, ...results];
+          }
 
           // Track and analyze raw classifications for precision warning advice
           const lowConfidenceCandidates = results.filter((p: any) => p.score >= 0.30 && p.score < accuracyThreshold);
@@ -1162,6 +1203,10 @@ export default function CameraView({
               const distFromCenter = Math.sqrt(
                 Math.pow(predCenterX - centerX, 2) + Math.pow(predCenterY - centerY, 2)
               );
+              const pointHitsBox = centerX >= x - CENTER_POINT_HIT_RADIUS_PX &&
+                centerX <= x + w + CENTER_POINT_HIT_RADIUS_PX &&
+                centerY >= y - CENTER_POINT_HIT_RADIUS_PX &&
+                centerY <= y + h + CENTER_POINT_HIT_RADIUS_PX;
 
               // SMART FALSE-POSITIVE 'PERSON' GUARD:
               // If the model identifies a 'person' but the bounding box coverage is very small (area < 12%),
@@ -1178,7 +1223,8 @@ export default function CameraView({
                 class: p.class.toLowerCase(),
                 score: p.score,
                 bbox: p.bbox,
-                distFromCenter
+                distFromCenter,
+                pointHitsBox
               };
             })
             .filter((d: any) => d !== null); // Cleanly drop false-positives
@@ -1192,8 +1238,11 @@ export default function CameraView({
             (results.length === 0 && cameraActive)
           );
 
-          // Sort predictions: candidates closest to center-of-vision come first
-          enrichedDetections.sort((a: any, b: any) => a.distFromCenter - b.distFromCenter);
+          // Sort predictions: exact reticle hits first, then nearest object to the center point.
+          enrichedDetections.sort((a: any, b: any) => {
+            if (a.pointHitsBox !== b.pointHitsBox) return a.pointHitsBox ? -1 : 1;
+            return a.distFromCenter - b.distFromCenter;
+          });
 
           // Apply Smart Glasses Clutter filter rules
           // In 'gaze' focus mode: we only render/highlight the single closest object to center ofvision to prevent distraction.
@@ -1229,14 +1278,14 @@ export default function CameraView({
                       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
                       return 100;
                     }
-                    return prev + 10;
+                    return prev + 12;
                   });
-                }, 120);
+                }, FOCUS_PROGRESS_STEP_MS);
 
-                // Setup lock trigger timer matching 1200ms
+                // Setup a short center-point lock so new objects are spoken almost immediately.
                 focusTimerRef.current = setTimeout(() => {
                   triggerObjectLock(className);
-                }, 1200);
+                }, CENTER_FOCUS_LOCK_MS);
               }
             }
           } else {
@@ -1256,15 +1305,15 @@ export default function CameraView({
             }
           }
 
-          // --- MEMORY MANAGEMENT: end TF scope to release intermediate tensors ---
-          if (tf && tf.engine) {
-            tf.engine().endScope();
-          }
         }
       } catch (err) {
         console.error("Detection error: ", err);
       } finally {
-        // Always release the in-flight guard so next frame can run
+        // Always release TF tensors and the in-flight guard so next frame can run.
+        const tf = (window as any).tf;
+        if (tfScopeStarted && tf?.engine) {
+          tf.engine().endScope();
+        }
         isDetectingRef.current = false;
       }
 
@@ -1652,7 +1701,7 @@ export default function CameraView({
                     <div className="bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/5">
                       <p className="text-white text-[11px] font-semibold flex items-center gap-1">
                         <Eye size={12} className="text-[#8a9a5b]" />
-                        <span>تابع البث أو ثبّت نظرك على كائن بالوسط...</span>
+                        <span>ضع الشيء على النقطة في الوسط...</span>
                       </p>
                     </div>
                   )}
@@ -1768,7 +1817,7 @@ export default function CameraView({
               <div className="flex items-center justify-between bg-stone-50 px-3 py-2.5 rounded-xl border border-stone-200">
                 <div className="flex flex-col">
                   <span className="text-[11px] font-black text-stone-700">دقة البث</span>
-                  <span className="text-[9px] text-stone-400">حد أدنى لثقة الذكاء الاصطناعي</span>
+                  <span className="text-[9px] text-stone-400">المسح موجه للنقطة الوسطى فقط</span>
                 </div>
                 <div className="flex items-center gap-1">
                   {[{ val: 0.50, label: 'مرنة' }, { val: 0.65, label: 'متوازنة' }, { val: 0.78, label: 'دقيقة' }].map((lvl) => (
