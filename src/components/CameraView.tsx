@@ -1,6 +1,21 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { VOCABULARY_MAP, VocabularyMeta } from '../data/vocabulary';
 import { saveWord } from '../lib/firebaseService';
+import {
+  BODYPIX_PART_LABELS,
+  BODY_PART_PRIORITY,
+  CENTER_FOCUS_LOCK_MS,
+  CENTER_POINT_HIT_RADIUS_PX,
+  CENTER_SCAN_RATIO,
+  FOCUS_PROGRESS_STEP_MS,
+  LIVE_OCR_INTERVAL_MS,
+  MAX_RADAR_OBJECTS,
+  PredictionBox,
+  SMART_FRAME_INTERVAL_MS,
+  TEXT_CONFIDENCE_THRESHOLD,
+  getStablePredictions,
+  recognizeBestTextFromVideo
+} from '../lib/cameraVision';
 import { 
   Volume2, 
   Bookmark, 
@@ -48,49 +63,6 @@ interface OCRPreset {
   }>;
 }
 
-
-const SMART_FRAME_INTERVAL_MS = 180;
-const LIVE_OCR_INTERVAL_MS = 2600;
-const TEXT_CONFIDENCE_THRESHOLD = 52;
-const CENTER_SCAN_RATIO = 0.58;
-const CENTER_POINT_HIT_RADIUS_PX = 34;
-const CENTER_FOCUS_LOCK_MS = 520;
-const FOCUS_PROGRESS_STEP_MS = 52;
-
-const BODYPIX_PART_LABELS: Record<number, 'face' | 'arm' | 'hand' | 'leg' | 'foot'> = {
-  0: 'face',
-  1: 'face',
-  2: 'arm',
-  3: 'arm',
-  4: 'arm',
-  5: 'arm',
-  6: 'hand',
-  7: 'hand',
-  8: 'arm',
-  9: 'arm',
-  10: 'arm',
-  11: 'arm',
-  12: 'hand',
-  13: 'hand',
-  14: 'leg',
-  15: 'leg',
-  16: 'leg',
-  17: 'leg',
-  18: 'foot',
-  19: 'foot',
-  20: 'leg',
-  21: 'leg',
-  22: 'leg',
-  23: 'leg'
-};
-
-const BODY_PART_PRIORITY: Record<string, number> = {
-  hand: 5,
-  face: 4,
-  foot: 3,
-  leg: 2,
-  arm: 1
-};
 
 const loadExternalScriptOnce = (src: string) => new Promise<void>((resolve, reject) => {
   const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
@@ -342,11 +314,6 @@ interface CameraViewProps {
   initialMode?: 'objects' | 'ocr' | 'offline';
 }
 
-interface PredictionBox {
-  class: string;
-  score: number;
-  bbox: [number, number, number, number]; // [x, y, width, height]
-}
 
 export default function CameraView({ 
   userId, 
@@ -452,6 +419,9 @@ export default function CameraView({
   const liveOcrBusyRef = useRef<boolean>(false);
   const lastLiveOcrFrameRef = useRef<number>(0);
   const lastLiveOcrTextRef = useRef<string>('');
+  const objectStabilityRef = useRef<Record<string, { hits: number; lastSeen: number; score: number }>>({});
+  const [ocrEngineStatus, setOcrEngineStatus] = useState<string>('تهيئة قارئ الصور...');
+  const [sceneLoad, setSceneLoad] = useState<number>(0);
 
   // Synchronously cache words
   const handleCacheWords = () => {
@@ -698,7 +668,7 @@ export default function CameraView({
           const response = await fetch("/api/translate", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: textToScan })
+            body: JSON.stringify({ text: textToScan, provider: 'auto', fast: textToScan.length < 90 })
           });
 
           if (!response.ok) {
@@ -791,6 +761,8 @@ export default function CameraView({
     utterance.rate = ttsRate;
     window.speechSynthesis.speak(utterance);
   };
+
+
 
 
 
@@ -893,45 +865,91 @@ export default function CameraView({
     return detections;
   };
 
-  const processLiveTextFrame = async (video: HTMLVideoElement) => {
+  const processLiveTextFrame = async (video: HTMLVideoElement, force = false) => {
     if (liveOcrBusyRef.current || !tesseractReadyRef.current) return;
     liveOcrBusyRef.current = true;
 
     try {
-      const canvas = document.createElement('canvas');
-      const scale = Math.min(1, 720 / Math.max(video.videoWidth || 640, video.videoHeight || 480));
-      canvas.width = Math.max(320, Math.floor((video.videoWidth || 640) * scale));
-      canvas.height = Math.max(240, Math.floor((video.videoHeight || 480) * scale));
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.filter = 'contrast(1.25) grayscale(1)';
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      setOcrEngineStatus(force ? 'قراءة قوية للصورة الحالية...' : 'قراءة نصوص البث...');
+      const best = await recognizeBestTextFromVideo(video);
+      if (!best) {
+        if (force) setOcrEngineStatus('لم أجد نصاً واضحاً. قرّب الكاميرا وثبّت يدك.');
+        return;
+      }
 
-      const Tesseract = (window as any).Tesseract;
-      if (!Tesseract?.recognize) return;
-      const { data } = await Tesseract.recognize(canvas, 'eng');
-      const confidence = Number(data?.confidence || 0);
-      const text = String(data?.text || '').replace(/\s+/g, ' ').trim();
-      if (confidence < TEXT_CONFIDENCE_THRESHOLD || !/[a-zA-Z]{2,}/.test(text) || text.length < 3) return;
-      if (text.toLowerCase() === lastLiveOcrTextRef.current.toLowerCase()) return;
+      const confidenceOk = best.confidence >= TEXT_CONFIDENCE_THRESHOLD || (force && best.confidence >= 22 && best.text.length >= 4);
+      if (!confidenceOk) {
+        if (force) setOcrEngineStatus(`النص ضعيف (${Math.round(best.confidence)}%). جرّب إضاءة أقوى.`);
+        return;
+      }
 
-      lastLiveOcrTextRef.current = text;
-      const translated = handleTranslateCustomText(text);
-      setOcrCustomText(text);
+      if (!force && best.text.toLowerCase() === lastLiveOcrTextRef.current.toLowerCase()) return;
+
+      lastLiveOcrTextRef.current = best.text;
+      setOcrCustomText(best.text);
+      setOcrScanStage(3);
+
+      let translated: OCRPreset;
+      if (isOfflineModeActive) {
+        translated = handleTranslateCustomText(best.text);
+      } else {
+        try {
+          const response = await fetch('/api/translate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: best.text, fast: !force, provider: 'auto' }),
+            signal: AbortSignal.timeout(force ? 12000 : 6500)
+          });
+          if (!response.ok) throw new Error(`OCR translate failed ${response.status}`);
+          const data = await response.json();
+          translated = {
+            id: 'live_' + Date.now(),
+            title: data.title || 'ترجمة صورة فورية',
+            english: data.english || best.text,
+            arabic: data.arabic || handleTranslateCustomText(best.text).arabic,
+            category: data.category || 'قراءة نص من الكاميرا',
+            phonetics: data.phonetics || `[${best.text}]`,
+            exampleEn: data.exampleEn || `Scanned: "${best.text}"`,
+            exampleAr: data.exampleAr || `الترجمة: "${data.arabic || best.text}"`,
+            grammarTip: data.grammarTip,
+            vocabulary: data.vocabulary
+          };
+        } catch (err) {
+          console.warn('Cloud OCR translation skipped, using local dictionary:', err);
+          translated = handleTranslateCustomText(best.text);
+        }
+      }
+
       setOcrResult({
         ...translated,
-        title: 'ترجمة شارع فورية من البث',
-        category: `قراءة نص حي من الكاميرا (${Math.round(confidence)}%)`
+        title: force ? 'ترجمة صورة قوية' : 'ترجمة شارع فورية من البث',
+        category: `${translated.category} · OCR ${Math.round(best.confidence)}% · ${best.variant}`
       });
       setOcrScanStage(4);
-      onWordIdentified(text);
+      setOcrEngineStatus(`تمت القراءة بثقة ${Math.round(best.confidence)}%`);
+      onWordIdentified(best.text);
       if (autoSpeak) speakArabic(translated.arabic);
     } catch (err) {
       console.warn('Live OCR frame skipped:', err);
+      if (force) setOcrEngineStatus('تعذرت قراءة الصورة الآن. حاول مرة أخرى.');
     } finally {
       liveOcrBusyRef.current = false;
     }
   };
+
+  const captureAndTranslateCurrentFrame = async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) {
+      setOcrEngineStatus('افتح الكاميرا أولاً حتى أقرأ الصورة.');
+      return;
+    }
+    setOcrScanning(true);
+    setOcrResult(null);
+    setOcrScanStage(2);
+    await processLiveTextFrame(video, true);
+    setOcrScanning(false);
+  };
+
 
   // 1. Initial Load: TensorFlow.js & COCO-SSD loaded from index.html (with resilience ticks)
   useEffect(() => {
@@ -988,7 +1006,10 @@ export default function CameraView({
           loadExternalScriptOnce('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js')
             .then(() => {
               tesseractReadyRef.current = !!(window as any).Tesseract;
-              if (active) setLiveOcrReady(tesseractReadyRef.current);
+              if (active) {
+                setLiveOcrReady(tesseractReadyRef.current);
+                setOcrEngineStatus(tesseractReadyRef.current ? 'قارئ الصور جاهز: إنجليزي + عربي' : 'قارئ الصور غير متاح');
+              }
             })
         ]).then(() => {
           if (active) setVisionBoostReady(!!handposeModelRef.current || !!bodyPixModelRef.current);
@@ -1244,12 +1265,15 @@ export default function CameraView({
             return a.distFromCenter - b.distFromCenter;
           });
 
+          const stableDetections = getStablePredictions(enrichedDetections, now, objectStabilityRef.current, accuracyThreshold);
+          setSceneLoad(enrichedDetections.length);
+
           // Apply Smart Glasses Clutter filter rules
-          // In 'gaze' focus mode: we only render/highlight the single closest object to center ofvision to prevent distraction.
-          // In 'radar' wide-scan mode: we render all of them.
+          // In 'gaze' focus mode: speak/render only the most stable center target.
+          // In 'radar' wide-scan mode: cap overlays to the best few stable objects to avoid overload.
           const finalPredictions = glassesFilterMode === 'gaze'
-            ? (enrichedDetections.length > 0 ? [enrichedDetections[0]] : [])
-            : enrichedDetections;
+            ? (stableDetections.length > 0 ? [stableDetections[0]] : [])
+            : stableDetections.slice(0, MAX_RADAR_OBJECTS);
 
           if (activeViewMode === 'objects') {
             setPredictions(finalPredictions);
@@ -1258,8 +1282,8 @@ export default function CameraView({
           }
 
           // Object Gaze Freeze Process: Choose the object nearest to the center (the first element in sorted enriched list)
-          if (enrichedDetections.length > 0 && activeViewMode === 'objects') {
-            const primary = enrichedDetections[0];
+          if (finalPredictions.length > 0 && activeViewMode === 'objects') {
+            const primary = finalPredictions[0];
             const className = primary.class;
 
             if (VOCABULARY_MAP[className]) {
@@ -1329,7 +1353,7 @@ export default function CameraView({
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [modelReady, cameraActive, focusedObject, focusProgress, glassesFilterMode, activeViewMode]);
+  }, [modelReady, cameraActive, focusedObject, focusProgress, glassesFilterMode, activeViewMode, accuracyThreshold, liveOcrReady, isOfflineModeActive, autoSpeak]);
 
   // Trigger Locking of object, play TTS audio and report progress
   const triggerObjectLock = (classNameToLock: string) => {
@@ -1723,7 +1747,8 @@ export default function CameraView({
               </span>
             )}
             <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-xl border ${visionBoostReady ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-stone-50 text-stone-400 border-stone-200'}`}>أجزاء الجسم {visionBoostReady ? 'مفعّلة' : 'قيد التحميل'}</span>
-            <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-xl border ${liveOcrReady ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-stone-50 text-stone-400 border-stone-200'}`}>قراءة اللافتات {liveOcrReady ? 'مفعّلة' : 'قيد التحميل'}</span>
+            <span className={`text-[10px] font-black px-2.5 py-1.5 rounded-xl border ${liveOcrReady ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-stone-50 text-stone-400 border-stone-200'}`}>قراءة الصور {liveOcrReady ? 'إنجليزي/عربي' : 'قيد التحميل'}</span>
+            <span className="text-[10px] font-black px-2.5 py-1.5 rounded-xl border bg-violet-50 text-violet-700 border-violet-200">زحمة المشهد: {sceneLoad > 3 ? 'عالية' : sceneLoad > 1 ? 'متوسطة' : 'هادئة'}</span>
           </div>
           <div className="flex flex-wrap items-center gap-3.5">
             {activeViewMode === 'objects' && (
@@ -1744,6 +1769,12 @@ export default function CameraView({
                   )}
                 </button>
               </>
+            )}
+            {activeViewMode === 'objects' && (
+              <button onClick={captureAndTranslateCurrentFrame} disabled={ocrScanning || !cameraActive || !liveOcrReady}
+                className={`px-4 py-1.5 rounded-xl flex items-center gap-1.5 text-xs font-black cursor-pointer border ${ocrScanning ? 'bg-stone-800 text-white cursor-not-allowed border-stone-900' : (!cameraActive || !liveOcrReady) ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed' : 'bg-sky-600 hover:bg-sky-700 text-white border-sky-600'}`}>
+                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>قراءة الصورة...</span></> : <><FileText size={13} /><span>اقرأ الصورة الآن</span></>}
+              </button>
             )}
             {activeViewMode === 'objects' && (
               <button onClick={triggerOcrScan} disabled={ocrScanning || !ocrCustomText.trim()}
@@ -1839,7 +1870,7 @@ export default function CameraView({
           <div className="border-t border-stone-100 pt-3 flex flex-col gap-1.5">
             <div className="flex justify-between items-center px-1">
               <span className="text-[10px] font-black text-stone-400">مدخل النص الذكي أو النص المقروء من البث</span>
-              <span className="text-[9px] text-stone-400">يفصل تلقائياً بين المجسمات والكلام الإنجليزي</span>
+              <span className="text-[9px] text-stone-400">{ocrEngineStatus}</span>
             </div>
             <textarea value={ocrCustomText} onChange={(e) => setOcrCustomText(e.target.value)}
               placeholder="اكتب نصاً إنجليزياً أو اترك الكاميرا تقرأ اللافتات تلقائياً..."

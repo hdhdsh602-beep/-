@@ -21,6 +21,8 @@ import SettingsView from './components/SettingsView';
 import SpeechTranslatorView from './components/SpeechTranslatorView';
 import AICopilot from './components/AICopilot';
 import EveningQuiz from './components/EveningQuiz';
+import ScreenOverlayTranslator from './components/ScreenOverlayTranslator';
+import { getDefaultTranslationEndpoint, notifyNativeScreenOverlay } from './lib/screenOverlayBridge';
 
 import { Sparkles, Loader2, Award, Flame, Menu, Moon, ArrowLeft, Radio } from 'lucide-react';
 
@@ -48,6 +50,11 @@ export default function App() {
       'lingolens_screen_overlay_translation',
       nextSettings.screenOverlayTranslationEnabled ? 'true' : 'false'
     );
+    notifyNativeScreenOverlay({
+      enabled: nextSettings.screenOverlayTranslationEnabled,
+      endpoint: getDefaultTranslationEndpoint(),
+      authToken: localStorage.getItem('LingoLens_GeminiKey') || undefined
+    });
     setSettings(nextSettings);
   };
 
@@ -354,6 +361,13 @@ export default function App() {
         )}
 
       </main>
+
+      <ScreenOverlayTranslator
+        enabled={settings.screenOverlayTranslationEnabled}
+        autoSpeak={settings.autoSpeak}
+        ttsPitch={settings.ttsPitch}
+        ttsRate={settings.ttsRate}
+      />
 
       {/* Persistent Bilingual Conversational AI Tutor & Language Co-Pilot */}
       <AICopilot 

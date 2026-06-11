@@ -92,9 +92,19 @@ class FloatingBubbleService : Service() {
             }
             ACTION_SET_MEDIA_PROJECTION -> installMediaProjection(incoming)
             ACTION_SET_SCREEN_TRANSLATION_ENABLED -> {
+                val enabled = incoming.getBooleanExtra(EXTRA_ENABLED, false)
                 prefs.edit()
-                    .putBoolean(KEY_SCREEN_TRANSLATION_ENABLED, incoming.getBooleanExtra(EXTRA_ENABLED, false))
+                    .putBoolean(KEY_SCREEN_TRANSLATION_ENABLED, enabled)
                     .apply()
+                if (enabled) {
+                    showFloatingBubble()
+                    showCenterOverlay("فقاعة ترجمة الشاشة جاهزة")
+                } else if (!prefs.getBoolean(KEY_AUDIO_TRANSLATION_ENABLED, true)) {
+                    removeBubble()
+                    dismissTranslationOverlay()
+                } else {
+                    showCenterOverlay("تم قفل ترجمة الشاشة")
+                }
             }
             ACTION_SET_AUDIO_TRANSLATION_ENABLED -> {
                 prefs.edit()
@@ -106,6 +116,7 @@ class FloatingBubbleService : Service() {
                     .putString(KEY_TRANSLATION_ENDPOINT, incoming.getStringExtra(EXTRA_TRANSLATION_ENDPOINT).orEmpty())
                     .putString(KEY_TRANSLATION_AUTH_TOKEN, incoming.getStringExtra(EXTRA_TRANSLATION_AUTH_TOKEN).orEmpty())
                     .apply()
+                showFloatingBubble()
             }
         }
         return START_STICKY
