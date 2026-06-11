@@ -7,7 +7,7 @@ export interface PredictionBox {
 export type OcrVariant = 'balanced' | 'sharp' | 'zoom';
 
 export const SMART_FRAME_INTERVAL_MS = 180;
-export const LIVE_OCR_INTERVAL_MS = 1800;
+export const LIVE_OCR_INTERVAL_MS = 1200;
 export const TEXT_CONFIDENCE_THRESHOLD = 36;
 export const OCR_LANGUAGES = 'eng+ara';
 export const MAX_RADAR_OBJECTS = 4;
@@ -62,7 +62,7 @@ export const normalizeOcrText = (raw: string) => String(raw || '')
 
 export const hasTranslatableText = (text: string) => /[a-zA-Z\u0600-\u06FF]{2,}/.test(text) && text.replace(/[^a-zA-Z\u0600-\u06FF]/g, '').length >= 3;
 
-export const buildOcrCanvasVariant = (video: HTMLVideoElement, variant: OcrVariant): HTMLCanvasElement | null => {
+export const buildOcrCanvasVariant = (video: HTMLVideoElement, variant: OcrVariant, mode: 'fast' | 'strong' = 'strong'): HTMLCanvasElement | null => {
   const videoWidth = video.videoWidth || 640;
   const videoHeight = video.videoHeight || 480;
   const sourceCrop = variant === 'zoom' ? 0.78 : 1;
@@ -70,8 +70,8 @@ export const buildOcrCanvasVariant = (video: HTMLVideoElement, variant: OcrVaria
   const sourceH = Math.floor(videoHeight * sourceCrop);
   const sourceX = Math.floor((videoWidth - sourceW) / 2);
   const sourceY = Math.floor((videoHeight - sourceH) / 2);
-  const longestSide = variant === 'zoom' ? 980 : 860;
-  const scale = Math.min(1.6, longestSide / Math.max(sourceW, sourceH));
+  const longestSide = mode === 'fast' ? 560 : (variant === 'zoom' ? 980 : 860);
+  const scale = Math.min(mode === 'fast' ? 1.15 : 1.6, longestSide / Math.max(sourceW, sourceH));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(360, Math.floor(sourceW * scale));
   canvas.height = Math.max(260, Math.floor(sourceH * scale));
@@ -89,15 +89,15 @@ export const buildOcrCanvasVariant = (video: HTMLVideoElement, variant: OcrVaria
   return canvas;
 };
 
-export const recognizeBestTextFromVideo = async (video: HTMLVideoElement) => {
+export const recognizeBestTextFromVideo = async (video: HTMLVideoElement, mode: 'fast' | 'strong' = 'fast') => {
   const Tesseract = (window as any).Tesseract;
   if (!Tesseract?.recognize) return null;
 
-  const variants: OcrVariant[] = ['balanced', 'sharp', 'zoom'];
+  const variants: OcrVariant[] = mode === 'strong' ? ['zoom', 'sharp', 'balanced'] : ['zoom'];
   let best: { text: string; confidence: number; variant: string } | null = null;
 
   for (const variant of variants) {
-    const canvas = buildOcrCanvasVariant(video, variant);
+    const canvas = buildOcrCanvasVariant(video, variant, mode);
     if (!canvas) continue;
     const { data } = await Tesseract.recognize(canvas, OCR_LANGUAGES, {
       tessedit_pageseg_mode: variant === 'zoom' ? '6' : '11',
@@ -108,7 +108,9 @@ export const recognizeBestTextFromVideo = async (video: HTMLVideoElement) => {
     if (hasTranslatableText(text) && (!best || confidence + text.length * 0.08 > best.confidence + best.text.length * 0.08)) {
       best = { text, confidence, variant };
     }
-    if (best && best.confidence >= 72 && best.text.length > 8) break;
+    canvas.width = 1;
+    canvas.height = 1;
+    if (mode === 'fast' || (best && best.confidence >= 72 && best.text.length > 8)) break;
   }
 
   return best;

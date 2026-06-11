@@ -1,5 +1,5 @@
-const CACHE_NAME = 'linguacam-cache-v1';
-const ASSETS_TO_CACHE = [
+const CACHE_NAME = 'linguacam-cache-v3';
+const CORE_ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
@@ -7,61 +7,58 @@ const ASSETS_TO_CACHE = [
   '/icon-512.png'
 ];
 
-// Install service worker and cache static assets
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE).catch((err) => {
-        console.warn('Initial cache preload completed with some dynamic warnings (handled gracefully):', err);
-      });
-    })
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS).catch((err) => {
+      console.warn('Initial cache preload completed with some dynamic warnings:', err);
+    }))
   );
   self.skipWaiting();
 });
 
-// Activate service worker and clear old caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames.map((cache) => {
-          if (cache !== CACHE_NAME) {
-            return caches.delete(cache);
-          }
-        })
-      );
-    })
+    caches.keys().then((cacheNames) => Promise.all(
+      cacheNames.map((cache) => (cache !== CACHE_NAME ? caches.delete(cache) : undefined))
+    )).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
-// Cache-first strategy for preloaded assets, network fallback
+const putInCache = async (request, response) => {
+  if (!response || response.status !== 200 || !request.url.startsWith(self.location.origin)) return;
+  const cache = await caches.open(CACHE_NAME);
+  await cache.put(request, response.clone());
+};
+
+const networkFirst = async (request) => {
+  try {
+    const response = await fetch(request, { cache: 'no-store' });
+    await putInCache(request, response);
+    return response;
+  } catch (err) {
+    return (await caches.match(request)) || caches.match('/');
+  }
+};
+
+const staleWhileRevalidate = async (request) => {
+  const cached = await caches.match(request);
+  const networkPromise = fetch(request).then(async (response) => {
+    await putInCache(request, response);
+    return response;
+  }).catch(() => caches.match('/'));
+
+  if (cached) return cached;
+  return (await networkPromise) || caches.match('/');
+};
+
 self.addEventListener('fetch', (event) => {
-  // Avoid caching non-GET or dynamic API routes or external streams
-  if (event.request.method !== 'GET' || event.request.url.includes('/api/')) {
+  const { request } = event;
+  if (request.method !== 'GET' || request.url.includes('/api/')) return;
+
+  if (request.mode === 'navigate') {
+    event.respondWith(networkFirst(request));
     return;
   }
-  
-  event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(event.request).then((networkResponse) => {
-        // Dynamically cache asset if successful and from same origin
-        if (networkResponse && networkResponse.status === 200 && event.request.url.startsWith(self.location.origin)) {
-          const cacheToDoc = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, cacheToDoc);
-          });
-        }
-        return networkResponse;
-      }).catch(() => {
-        // Fallback for offline usage
-        if (event.request.mode === 'navigate') {
-          return caches.match('/');
-        }
-      });
-    })
-  );
+
+  event.respondWith(staleWhileRevalidate(request));
 });

@@ -66,3 +66,26 @@ The Android host should translate that bridge message into:
 2. `ACTION_SET_SCREEN_TRANSLATION_ENABLED` with `EXTRA_ENABLED`.
 3. `MediaProjectionManager.createScreenCaptureIntent()` and then `ACTION_SET_MEDIA_PROJECTION` after permission succeeds.
 
+
+## Make the bubble icon visible above every app
+
+A web/PWA install can update itself from the web, but Android does not allow a normal web page to draw over other apps. To keep the LingoLens icon visible on top of WhatsApp, Chrome, YouTube, maps, or any other app, ship the native Android wrapper and enable the foreground overlay service.
+
+Recommended activation flow in the Android host:
+
+1. When the user turns on screen translation from the web UI bridge, open Android settings with `Settings.ACTION_MANAGE_OVERLAY_PERMISSION` if `Settings.canDrawOverlays(context)` is false.
+2. After the user grants “Display over other apps”, start `FloatingBubbleService` as a foreground service.
+3. Request screen capture with `MediaProjectionManager.createScreenCaptureIntent()` and pass the result back to the service with `ACTION_SET_MEDIA_PROJECTION`.
+4. Send `ACTION_SET_TRANSLATION_ENDPOINT` using the deployed web URL, then send `ACTION_SET_SCREEN_TRANSLATION_ENABLED` with `EXTRA_ENABLED = true`.
+5. Keep the service notification visible. Android requires this notification for long-running overlay and screen-capture work.
+
+User-facing steps:
+
+1. Install/open the Android app.
+2. Open Settings > Screen translation bubble.
+3. Tap enable.
+4. Allow “Display over other apps”.
+5. Allow “Start recording/casting” for screen OCR.
+6. The floating “ترجم” bubble stays visible above other apps. Single tap can trigger audio translation; double tap or long press reads the current screen text.
+
+If the bubble disappears, check battery optimization settings and set the app to “Unrestricted” so Android does not kill the foreground service.
