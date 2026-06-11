@@ -233,7 +233,7 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
             <div className="flex items-center justify-between p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100">
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs font-bold text-stone-700">ترجمة الشاشة من الفقاعة العائمة</span>
-                <span className="text-[10px] text-stone-500 leading-relaxed">ضغطة طويلة أو ضغطتين على الفقاعة تلتقط لقطة واحدة فقط ثم OCR وترجمة عربية لتوفير البطارية.</span>
+                <span className="text-[10px] text-stone-500 leading-relaxed">في الويب تظهر فقاعة داخل التطبيق لترجمة الحافظة، وداخل تطبيق Android الأصلي تُرسل إشارة لتشغيل الفقاعة فوق كل التطبيقات مع OCR للشاشة.</span>
               </div>
               <button
                 type="button"

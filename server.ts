@@ -32,6 +32,31 @@ function getAiClient(): GoogleGenAI {
   return aiInstance;
 }
 
+
+const GEMINI_FAST_MODEL = process.env.GEMINI_MODEL || process.env.GEMINI_FLASH_MODEL || "gemini-2.0-flash";
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 8500);
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
+  ]);
+}
+
+function shapeTranslation(text: string, arabic: string, fast: boolean) {
+  return {
+    title: fast ? "ترجمة سريعة" : "ترجمة نص من الصورة",
+    english: text,
+    arabic: arabic || text,
+    category: "ترجمة عامة",
+    phonetics: "",
+    grammarTip: fast ? undefined : "تم استخدام مزود ترجمة احتياطي سريع عند تعذر المعالج الذكي.",
+    exampleEn: fast ? undefined : `Scanned: "${text}"`,
+    exampleAr: fast ? undefined : arabic || text,
+    vocabulary: fast ? undefined : []
+  };
+}
+
 // Clean response from Ollama if it wrapped it inside markdown code block
 function cleanOllamaJson(text: string): string {
   let cleaned = text.trim();
@@ -241,7 +266,7 @@ Respond strictly with a single JSON object. Do not include markdown code block c
 
     let parsedJson;
 
-    // Free translation providers (LibreTranslate, MyMemory) - simple text translation only
+    // Free/open translation providers and auto cascade for mobile OCR speed.
     if (provider === "libre") {
       const translatedText = await libreTranslate(trimmedText);
       parsedJson = {
@@ -264,22 +289,33 @@ Respond strictly with a single JSON object. Do not include markdown code block c
       const responseText = await queryOllama(prompt, schemaConfig);
       parsedJson = JSON.parse(cleanOllamaJson(responseText));
     } else {
-      // Default: Gemini AI (best quality)
-      const ai = getAiClient();
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: schemaConfig
-        }
-      });
+      // Default/auto: Gemini Flash first, then no-key open translation fallbacks.
+      try {
+        const ai = getAiClient();
+        const response = await withTimeout(ai.models.generateContent({
+          model: GEMINI_FAST_MODEL,
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: schemaConfig,
+            temperature: fast ? 0.05 : 0.15
+          }
+        }), GEMINI_TIMEOUT_MS, "Gemini translation");
 
-      const resultText = response.text;
-      if (!resultText) {
-        throw new Error("Empty response from GenAI model");
+        const resultText = response.text;
+        if (!resultText) {
+          throw new Error("Empty response from GenAI model");
+        }
+        parsedJson = JSON.parse(resultText.trim());
+      } catch (geminiErr) {
+        if (provider && provider !== "auto") throw geminiErr;
+        console.warn("Gemini unavailable; using fast translation cascade...", geminiErr);
+        try {
+          parsedJson = shapeTranslation(trimmedText, await myMemoryTranslate(trimmedText), !!fast);
+        } catch {
+          parsedJson = shapeTranslation(trimmedText, await libreTranslate(trimmedText), !!fast);
+        }
       }
-      parsedJson = JSON.parse(resultText.trim());
     }
 
     res.json(parsedJson);

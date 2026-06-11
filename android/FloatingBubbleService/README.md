@@ -40,3 +40,29 @@ Send these service intents from your settings screen:
 - `ACTION_SET_MEDIA_PROJECTION` with the MediaProjection permission result data after `MediaProjectionManager.createScreenCaptureIntent()` succeeds.
 
 Single tap emits the package-local broadcast `ACTION_AUDIO_TRANSLATION_REQUESTED` with `EXTRA_AUDIO_CAPTURE_MS = 5000`; connect your existing 5-second audio capture pipeline to that broadcast.
+## Web/PWA settings bridge
+
+The React setting now also emits a browser/native bridge payload whenever the user toggles screen overlay translation:
+
+- `window.LingoLensAndroid.configureScreenTranslator(payloadJson)`
+- `window.LingoLensAndroid.setScreenOverlayTranslationEnabled(enabled)`
+- `window.LingoLensAndroid.requestScreenCapturePermission()` when enabling
+- `window.ReactNativeWebView.postMessage(payloadJson)` for React Native/WebView shells
+
+`payloadJson` contains:
+
+```json
+{
+  "type": "LINGOLENS_SCREEN_OVERLAY",
+  "enabled": true,
+  "endpoint": "https://your-domain.com/api/translate",
+  "authToken": "optional"
+}
+```
+
+The Android host should translate that bridge message into:
+
+1. `ACTION_SET_TRANSLATION_ENDPOINT` with `EXTRA_TRANSLATION_ENDPOINT` and optional `EXTRA_TRANSLATION_AUTH_TOKEN`.
+2. `ACTION_SET_SCREEN_TRANSLATION_ENABLED` with `EXTRA_ENABLED`.
+3. `MediaProjectionManager.createScreenCaptureIntent()` and then `ACTION_SET_MEDIA_PROJECTION` after permission succeeds.
+
