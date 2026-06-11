@@ -7,7 +7,7 @@ export interface PredictionBox {
 export type OcrVariant = 'balanced' | 'sharp' | 'zoom';
 
 export const SMART_FRAME_INTERVAL_MS = 180;
-export const LIVE_OCR_INTERVAL_MS = 1800;
+export const LIVE_OCR_INTERVAL_MS = 750;
 export const TEXT_CONFIDENCE_THRESHOLD = 36;
 export const OCR_LANGUAGES = 'eng+ara';
 export const MAX_RADAR_OBJECTS = 4;
@@ -89,11 +89,11 @@ export const buildOcrCanvasVariant = (video: HTMLVideoElement, variant: OcrVaria
   return canvas;
 };
 
-export const recognizeBestTextFromVideo = async (video: HTMLVideoElement) => {
+export const recognizeBestTextFromVideo = async (video: HTMLVideoElement, mode: 'fast' | 'strong' = 'fast') => {
   const Tesseract = (window as any).Tesseract;
   if (!Tesseract?.recognize) return null;
 
-  const variants: OcrVariant[] = ['balanced', 'sharp', 'zoom'];
+  const variants: OcrVariant[] = mode === 'strong' ? ['zoom', 'sharp', 'balanced'] : ['zoom'];
   let best: { text: string; confidence: number; variant: string } | null = null;
 
   for (const variant of variants) {
@@ -108,7 +108,7 @@ export const recognizeBestTextFromVideo = async (video: HTMLVideoElement) => {
     if (hasTranslatableText(text) && (!best || confidence + text.length * 0.08 > best.confidence + best.text.length * 0.08)) {
       best = { text, confidence, variant };
     }
-    if (best && best.confidence >= 72 && best.text.length > 8) break;
+    if (mode === 'fast' || (best && best.confidence >= 72 && best.text.length > 8)) break;
   }
 
   return best;

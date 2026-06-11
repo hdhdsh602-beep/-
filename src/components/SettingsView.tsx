@@ -1,15 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppSettings } from '../types';
-import { Volume2, Settings, Sparkles, HelpCircle, Check, ShieldCheck, Briefcase, Radio, WifiOff, ArrowLeft, FileText } from 'lucide-react';
+import { Volume2, Settings, Sparkles, HelpCircle, Check, ShieldCheck, Briefcase, Radio, WifiOff, ArrowLeft, FileText, Languages, Smartphone, BadgeCheck } from 'lucide-react';
 
 interface SettingsViewProps {
   settings: AppSettings;
   onSettingsChange: (settings: AppSettings) => void;
   onOpenOfflineKit: () => void;
   onOpenLiveStream: () => void;
+  onToggleScreenOverlay: () => void;
 }
 
-export default function SettingsView({ settings, onSettingsChange, onOpenOfflineKit, onOpenLiveStream }: SettingsViewProps) {
+export default function SettingsView({ settings, onSettingsChange, onOpenOfflineKit, onOpenLiveStream, onToggleScreenOverlay }: SettingsViewProps) {
   const [voice, setVoice] = useState(settings.ttsVoice);
   const [pitch, setPitch] = useState(settings.ttsPitch);
   const [rate, setRate] = useState(settings.ttsRate);
@@ -20,6 +21,10 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
   // Gemini Advanced Option
   const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('LingoLens_GeminiKey') || '');
   const [keySaved, setKeySaved] = useState(false);
+
+  useEffect(() => {
+    setScreenOverlayTranslationEnabled(settings.screenOverlayTranslationEnabled);
+  }, [settings.screenOverlayTranslationEnabled]);
 
   const handleSaveSettings = () => {
     onSettingsChange({
@@ -83,6 +88,51 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
       </div>
 
 
+      {/* Prominent mobile feature control so the new overlay is not hidden inside the settings list */}
+      <div className="bg-gradient-to-br from-sky-600 to-sky-700 text-white rounded-3xl border border-sky-500 shadow-sm p-5 overflow-hidden relative">
+        <div className="absolute -top-12 -left-12 w-36 h-36 rounded-full bg-white/10 blur-2xl" />
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center shrink-0">
+              <Languages size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-base md:text-lg font-black">ميزة ترجمة الشاشة للموبايل</h3>
+                <span className={`px-2 py-1 rounded-full text-[10px] font-black ${screenOverlayTranslationEnabled ? 'bg-emerald-300 text-emerald-950' : 'bg-white/15 text-white'}`}>
+                  {screenOverlayTranslationEnabled ? 'مفعّلة الآن' : 'غير مفعّلة'}
+                </span>
+              </div>
+              <p className="text-xs text-sky-50/90 font-bold leading-relaxed mt-1 max-w-2xl">
+                لو مش ظاهرة على الموبايل غالباً لأنها كانت مخفية داخل الإعدادات أو تحتاج إذن الظهور فوق التطبيقات. شغّلها من الزر، ثم ستظهر فقاعة الويب داخل التطبيق، وفي Android الأصلي يطلب إذن تصوير الشاشة والظهور فوق التطبيقات.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setScreenOverlayTranslationEnabled((current) => !current);
+              onToggleScreenOverlay();
+            }}
+            className="px-5 py-3 rounded-2xl bg-white text-sky-700 font-black text-xs shadow-sm hover:bg-sky-50 active:scale-95 transition-all cursor-pointer shrink-0"
+            aria-pressed={screenOverlayTranslationEnabled}
+          >
+            {screenOverlayTranslationEnabled ? 'إيقاف ترجمة الشاشة' : 'إظهار الفقاعة الآن'}
+          </button>
+        </div>
+        <div className="relative z-10 grid grid-cols-1 md:grid-cols-3 gap-2 mt-4">
+          {[
+            { icon: Smartphone, text: 'اختصار ظاهر في هيدر الموبايل والقائمة' },
+            { icon: BadgeCheck, text: 'حفظ الحالة تلقائياً بعد إعادة فتح التطبيق' },
+            { icon: ShieldCheck, text: 'Android يحتاج أذونات overlay وscreen capture' }
+          ].map((item) => (
+            <div key={item.text} className="flex items-center gap-2 bg-white/10 border border-white/10 rounded-2xl px-3 py-2 text-[10px] font-black text-sky-50">
+              <item.icon size={13} />
+              <span>{item.text}</span>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Distraction-free quick actions moved from the live stream screen */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -233,7 +283,7 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
             <div className="flex items-center justify-between p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100">
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs font-bold text-stone-700">ترجمة الشاشة من الفقاعة العائمة</span>
-                <span className="text-[10px] text-stone-500 leading-relaxed">في الويب تظهر فقاعة داخل التطبيق لترجمة الحافظة، وداخل تطبيق Android الأصلي تُرسل إشارة لتشغيل الفقاعة فوق كل التطبيقات مع OCR للشاشة.</span>
+                <span className="text-[10px] text-stone-500 leading-relaxed">في الويب تظهر فقاعة داخل التطبيق لترجمة النص المنسوخ. في Android الأصلي يلزم منح إذن الظهور فوق التطبيقات وتصوير الشاشة حتى تعمل فوق كل التطبيقات.</span>
               </div>
               <button
                 type="button"
