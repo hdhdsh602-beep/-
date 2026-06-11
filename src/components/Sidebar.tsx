@@ -1,5 +1,5 @@
 import { UserProfile } from '../types';
-import { Radio, BookOpen, User, Settings, LogOut, Flame, X, Mic, DownloadCloud, Moon } from 'lucide-react';
+import { Radio, BookOpen, User, Settings, LogOut, Flame, X, Mic, DownloadCloud, Moon, Languages } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -11,6 +11,8 @@ interface SidebarProps {
   deferredPrompt: any;
   onInstall: () => void;
   onOpenEveningQuiz: () => void;
+  screenOverlayEnabled: boolean;
+  onToggleScreenOverlay: () => void;
 }
 
 export default function Sidebar({ 
@@ -22,7 +24,9 @@ export default function Sidebar({
   onClose,
   deferredPrompt,
   onInstall,
-  onOpenEveningQuiz
+  onOpenEveningQuiz,
+  screenOverlayEnabled,
+  onToggleScreenOverlay
 }: SidebarProps) {
   const getLevelLabel = (level?: string) => {
     switch (level) {
@@ -144,6 +148,39 @@ export default function Sidebar({
               <span>الإعدادات والمساعد</span>
             </button>
           </nav>
+
+          {/* Mobile-first screen overlay translation shortcut */}
+          <div className="mt-5 rounded-3xl border border-sky-100 bg-gradient-to-br from-sky-50 to-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-2xl bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Languages size={17} />
+                </div>
+                <div>
+                  <p className="text-xs font-black text-stone-850">فقاعة ترجمة الشاشة</p>
+                  <p className="text-[10px] font-bold text-stone-500 leading-relaxed mt-1">اختصار واضح للموبايل: شغّلها من هنا، ثم انسخ النص أو امنح إذن الظهور فوق التطبيقات في Android.</p>
+                </div>
+              </div>
+              <span className={`px-2 py-1 rounded-full text-[9px] font-black shrink-0 ${screenOverlayEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-stone-100 text-stone-500'}`}>
+                {screenOverlayEnabled ? 'شغالة' : 'مقفلة'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onToggleScreenOverlay();
+                onClose();
+              }}
+              className={`mt-3 w-full py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer active:scale-[0.98] ${
+                screenOverlayEnabled
+                  ? 'bg-stone-900 text-white hover:bg-stone-800'
+                  : 'bg-sky-600 text-white hover:bg-sky-700 shadow-sm'
+              }`}
+              aria-pressed={screenOverlayEnabled}
+            >
+              {screenOverlayEnabled ? 'إيقاف الفقاعة' : 'تشغيل الفقاعة الآن'}
+            </button>
+          </div>
 
           {/* Evening Quiz Celestial Trigger */}
           <div className="mt-6 pt-5 border-t border-stone-150">

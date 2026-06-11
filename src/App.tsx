@@ -24,7 +24,7 @@ import EveningQuiz from './components/EveningQuiz';
 import ScreenOverlayTranslator from './components/ScreenOverlayTranslator';
 import { getDefaultTranslationEndpoint, notifyNativeScreenOverlay } from './lib/screenOverlayBridge';
 
-import { Sparkles, Loader2, Award, Flame, Menu, Moon, ArrowLeft, Radio } from 'lucide-react';
+import { Sparkles, Loader2, Award, Flame, Menu, Moon, ArrowLeft, Radio, Languages } from 'lucide-react';
 
 export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -45,17 +45,29 @@ export default function App() {
     screenOverlayTranslationEnabled: localStorage.getItem('lingolens_screen_overlay_translation') === 'true'
   });
 
-  const handleSettingsChange = (nextSettings: AppSettings) => {
-    localStorage.setItem(
-      'lingolens_screen_overlay_translation',
-      nextSettings.screenOverlayTranslationEnabled ? 'true' : 'false'
-    );
+  const syncScreenOverlayState = (enabled: boolean) => {
+    localStorage.setItem('lingolens_screen_overlay_translation', enabled ? 'true' : 'false');
     notifyNativeScreenOverlay({
-      enabled: nextSettings.screenOverlayTranslationEnabled,
+      enabled,
       endpoint: getDefaultTranslationEndpoint(),
       authToken: localStorage.getItem('LingoLens_GeminiKey') || undefined
     });
+  };
+
+  const handleSettingsChange = (nextSettings: AppSettings) => {
+    syncScreenOverlayState(nextSettings.screenOverlayTranslationEnabled);
     setSettings(nextSettings);
+  };
+
+  const toggleScreenOverlayTranslation = () => {
+    setSettings((currentSettings) => {
+      const nextSettings = {
+        ...currentSettings,
+        screenOverlayTranslationEnabled: !currentSettings.screenOverlayTranslationEnabled
+      };
+      syncScreenOverlayState(nextSettings.screenOverlayTranslationEnabled);
+      return nextSettings;
+    });
   };
 
   // Saved words list
@@ -75,6 +87,12 @@ export default function App() {
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+  }, []);
+
+  useEffect(() => {
+    if (settings.screenOverlayTranslationEnabled) {
+      syncScreenOverlayState(true);
+    }
   }, []);
 
   const handleInstallPWA = async () => {
@@ -225,7 +243,23 @@ export default function App() {
           <span className="text-base font-black text-[#5a6a3b] tracking-tight">LingoLens</span>
         </div>
 
-        <div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={toggleScreenOverlayTranslation}
+            className={`relative p-2 rounded-xl border transition-all active:scale-90 cursor-pointer ${
+              settings.screenOverlayTranslationEnabled
+                ? 'bg-sky-50 border-sky-200 text-sky-600 shadow-sm'
+                : 'bg-stone-50 border-stone-200 text-stone-400'
+            }`}
+            title={settings.screenOverlayTranslationEnabled ? 'إيقاف فقاعة ترجمة الشاشة' : 'تشغيل فقاعة ترجمة الشاشة'}
+            aria-pressed={settings.screenOverlayTranslationEnabled}
+            aria-label="تشغيل أو إيقاف فقاعة ترجمة الشاشة"
+          >
+            <Languages size={18} />
+            {settings.screenOverlayTranslationEnabled && <span className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400 border border-white" />}
+          </button>
+
           {userProfile && userProfile.streak > 0 ? (
             <div className="flex items-center gap-1 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200/50 text-amber-600 font-bold text-xs" title="أيام التوالي">
               <Flame size={13} className="fill-amber-500 text-amber-500" />
@@ -250,6 +284,8 @@ export default function App() {
         deferredPrompt={deferredPrompt}
         onInstall={handleInstallPWA}
         onOpenEveningQuiz={() => setIsEveningQuizOpen(true)}
+        screenOverlayEnabled={settings.screenOverlayTranslationEnabled}
+        onToggleScreenOverlay={toggleScreenOverlayTranslation}
       />
 
       {/* Main Content Workspace Layout-Left */}
@@ -357,6 +393,7 @@ export default function App() {
             onSettingsChange={handleSettingsChange}
             onOpenOfflineKit={() => openCameraMode('offline')}
             onOpenLiveStream={() => openCameraMode('objects')}
+            onToggleScreenOverlay={toggleScreenOverlayTranslation}
           />
         )}
 

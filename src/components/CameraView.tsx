@@ -421,6 +421,8 @@ export default function CameraView({
   const lastLiveOcrTextRef = useRef<string>('');
   const objectStabilityRef = useRef<Record<string, { hits: number; lastSeen: number; score: number }>>({});
   const [ocrEngineStatus, setOcrEngineStatus] = useState<string>('تهيئة قارئ الصور...');
+  const [signAutoTranslateEnabled, setSignAutoTranslateEnabled] = useState<boolean>(true);
+  const [showManualTextInput, setShowManualTextInput] = useState<boolean>(false);
   const [sceneLoad, setSceneLoad] = useState<number>(0);
 
   // Synchronously cache words
@@ -712,9 +714,9 @@ export default function CameraView({
     }, 600);
   }, [ocrCustomText, isOfflineModeActive, onWordIdentified]);
 
-  // Smart text debouncer - manual English text is translated without switching modes
+  // Manual text debouncer stays opt-in; camera OCR translates directly without forcing users to type.
   useEffect(() => {
-    if (activeViewMode === 'offline' || !ocrCustomText.trim()) return;
+    if (!showManualTextInput || activeViewMode === 'offline' || !ocrCustomText.trim()) return;
     if (ocrScanning) return;
 
     const handler = setTimeout(() => {
@@ -722,7 +724,7 @@ export default function CameraView({
     }, 700);
 
     return () => clearTimeout(handler);
-  }, [ocrCustomText, activeViewMode, ocrScanning, triggerOcrScan]);
+  }, [ocrCustomText, activeViewMode, ocrScanning, showManualTextInput, triggerOcrScan]);
 
   // References to keep track of intervals/animation frames and anti-repetition guards
   const requestRef = useRef<number | null>(null);
@@ -871,7 +873,7 @@ export default function CameraView({
 
     try {
       setOcrEngineStatus(force ? 'قراءة قوية للصورة الحالية...' : 'قراءة نصوص البث...');
-      const best = await recognizeBestTextFromVideo(video);
+      const best = await recognizeBestTextFromVideo(video, force ? 'strong' : 'fast');
       if (!best) {
         if (force) setOcrEngineStatus('لم أجد نصاً واضحاً. قرّب الكاميرا وثبّت يدك.');
         return;
@@ -920,6 +922,8 @@ export default function CameraView({
         }
       }
 
+      setOcrSaved(false);
+      setSavedVocabWords({});
       setOcrResult({
         ...translated,
         title: force ? 'ترجمة صورة قوية' : 'ترجمة شارع فورية من البث',
@@ -1180,7 +1184,7 @@ export default function CameraView({
           const video = videoRef.current;
           if (!video) { isDetectingRef.current = false; return; }
 
-          if (liveOcrReady && now - lastLiveOcrFrameRef.current > LIVE_OCR_INTERVAL_MS) {
+          if (signAutoTranslateEnabled && liveOcrReady && now - lastLiveOcrFrameRef.current > LIVE_OCR_INTERVAL_MS) {
             lastLiveOcrFrameRef.current = now;
             processLiveTextFrame(video);
           }
@@ -1353,7 +1357,7 @@ export default function CameraView({
     return () => {
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
     };
-  }, [modelReady, cameraActive, focusedObject, focusProgress, glassesFilterMode, activeViewMode, accuracyThreshold, liveOcrReady, isOfflineModeActive, autoSpeak]);
+  }, [modelReady, cameraActive, focusedObject, focusProgress, glassesFilterMode, activeViewMode, accuracyThreshold, liveOcrReady, signAutoTranslateEnabled, isOfflineModeActive, autoSpeak]);
 
   // Trigger Locking of object, play TTS audio and report progress
   const triggerObjectLock = (classNameToLock: string) => {
@@ -1773,7 +1777,7 @@ export default function CameraView({
             {activeViewMode === 'objects' && (
               <button onClick={captureAndTranslateCurrentFrame} disabled={ocrScanning || !cameraActive || !liveOcrReady}
                 className={`px-4 py-1.5 rounded-xl flex items-center gap-1.5 text-xs font-black cursor-pointer border ${ocrScanning ? 'bg-stone-800 text-white cursor-not-allowed border-stone-900' : (!cameraActive || !liveOcrReady) ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed' : 'bg-sky-600 hover:bg-sky-700 text-white border-sky-600'}`}>
-                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>قراءة الصورة...</span></> : <><FileText size={13} /><span>اقرأ الصورة الآن</span></>}
+                {ocrScanning ? <><Loader2 className="animate-spin" size={13} /><span>قراءة اللافتة...</span></> : <><FileText size={13} /><span>ترجم اللافتة بالكاميرا</span></>}
               </button>
             )}
             {activeViewMode === 'objects' && (
@@ -1867,14 +1871,69 @@ export default function CameraView({
         )}
 
         {activeViewMode === 'objects' && (
-          <div className="border-t border-stone-100 pt-3 flex flex-col gap-1.5">
-            <div className="flex justify-between items-center px-1">
-              <span className="text-[10px] font-black text-stone-400">مدخل النص الذكي أو النص المقروء من البث</span>
-              <span className="text-[9px] text-stone-400">{ocrEngineStatus}</span>
+          <div className="border-t border-stone-100 pt-3 flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSignAutoTranslateEnabled(true);
+                captureAndTranslateCurrentFrame();
+              }}
+              disabled={ocrScanning || !cameraActive || !liveOcrReady}
+              className={`w-full p-4 rounded-2xl border text-right transition-all active:scale-[0.99] ${
+                ocrScanning
+                  ? 'bg-sky-700 text-white border-sky-700 cursor-wait'
+                  : (!cameraActive || !liveOcrReady)
+                    ? 'bg-stone-50 text-stone-400 border-stone-200 cursor-not-allowed'
+                    : 'bg-gradient-to-l from-sky-600 to-blue-600 hover:from-sky-700 hover:to-blue-700 text-white border-sky-500 shadow-md cursor-pointer'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-2xl bg-white/15 border border-white/20 flex items-center justify-center shrink-0">
+                    {ocrScanning ? <Loader2 className="animate-spin" size={18} /> : <Scan size={18} />}
+                  </span>
+                  <span className="flex flex-col">
+                    <span className="text-sm font-black">اضغط لترجمة اللافتة من الكاميرا فوراً</span>
+                    <span className="text-[10px] font-bold opacity-80">بدون كتابة — مناسب للنظارة: وجّه العدسة للنص وسيظهر النطق والترجمة بسرعة.</span>
+                  </span>
+                </div>
+                <span className={`text-[9px] font-black px-2 py-1 rounded-full shrink-0 ${signAutoTranslateEnabled ? 'bg-emerald-300 text-emerald-950' : 'bg-white/15 text-white'}`}>
+                  {signAutoTranslateEnabled ? 'تلقائي سريع' : 'يدوي'}
+                </span>
+              </div>
+            </button>
+
+            <div className="flex items-center justify-between gap-2 px-1">
+              <span className="text-[9px] text-stone-400 font-bold truncate">{ocrEngineStatus}</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSignAutoTranslateEnabled((value) => !value)}
+                  className={`px-2 py-1 rounded-lg text-[9px] font-black border transition-all cursor-pointer ${signAutoTranslateEnabled ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-stone-50 text-stone-500 border-stone-200'}`}
+                >
+                  {signAutoTranslateEnabled ? 'إيقاف التلقائي' : 'تشغيل التلقائي'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowManualTextInput((value) => !value)}
+                  className="px-2 py-1 rounded-lg text-[9px] font-black border border-stone-200 bg-white text-stone-500 hover:bg-stone-50 transition-all cursor-pointer"
+                >
+                  {showManualTextInput ? 'إخفاء الكتابة' : 'كتابة اختيارية'}
+                </button>
+              </div>
             </div>
-            <textarea value={ocrCustomText} onChange={(e) => setOcrCustomText(e.target.value)}
-              placeholder="اكتب نصاً إنجليزياً أو اترك الكاميرا تقرأ اللافتات تلقائياً..."
-              className="w-full text-xs p-3 border border-stone-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#8a9a5b] bg-stone-50 text-stone-800 resize-none h-16 shadow-inner" />
+
+            {ocrCustomText && !showManualTextInput && (
+              <div className="rounded-xl bg-stone-50 border border-stone-200 px-3 py-2 text-[10px] font-bold text-stone-600 leading-relaxed">
+                آخر نص قرأته العدسة: <span dir="ltr" className="font-black text-stone-900">{ocrCustomText}</span>
+              </div>
+            )}
+
+            {showManualTextInput && (
+              <textarea value={ocrCustomText} onChange={(e) => setOcrCustomText(e.target.value)}
+                placeholder="اختياري فقط: اكتب نصاً عند عدم توفر الكاميرا..."
+                className="w-full text-xs p-3 border border-stone-200 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-[#8a9a5b] bg-stone-50 text-stone-800 resize-none h-16 shadow-inner" />
+            )}
           </div>
         )}
       </div>
