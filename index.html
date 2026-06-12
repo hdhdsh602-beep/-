@@ -31,8 +31,13 @@
           navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
             .then((reg) => {
               console.log('Service Worker registered successfully:', reg.scope);
-              reg.update();
-              setInterval(() => reg.update(), 30 * 60 * 1000);
+              const checkForUpdates = () => reg.update();
+              checkForUpdates();
+              setInterval(checkForUpdates, 5 * 60 * 1000);
+              window.addEventListener('focus', checkForUpdates);
+              document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') checkForUpdates();
+              });
             })
             .catch(err => console.error('Service Worker registration failed:', err));
         });

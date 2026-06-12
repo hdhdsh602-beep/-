@@ -50,7 +50,8 @@ export default function App() {
     notifyNativeScreenOverlay({
       enabled,
       endpoint: getDefaultTranslationEndpoint(),
-      authToken: localStorage.getItem('LingoLens_GeminiKey') || undefined
+      authToken: localStorage.getItem('LingoLens_GeminiKey') || undefined,
+      audioTranslationEnabled: enabled
     });
   };
 
