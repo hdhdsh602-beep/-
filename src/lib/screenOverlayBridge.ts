@@ -2,6 +2,7 @@ export interface OverlayBridgePayload {
   enabled: boolean;
   endpoint: string;
   authToken?: string;
+  audioTranslationEnabled?: boolean;
 }
 
 declare global {
@@ -10,6 +11,7 @@ declare global {
       setScreenOverlayTranslationEnabled?: (enabled: boolean) => void;
       configureScreenTranslator?: (payloadJson: string) => void;
       requestScreenCapturePermission?: () => void;
+      requestAudioCapturePermission?: () => void;
     };
     ReactNativeWebView?: {
       postMessage?: (message: string) => void;
@@ -37,6 +39,10 @@ export const notifyNativeScreenOverlay = (payload: OverlayBridgePayload): boolea
   }
   if (payload.enabled && window.LingoLensAndroid?.requestScreenCapturePermission) {
     window.LingoLensAndroid.requestScreenCapturePermission();
+    delivered = true;
+  }
+  if (payload.enabled && window.LingoLensAndroid?.requestAudioCapturePermission) {
+    window.LingoLensAndroid.requestAudioCapturePermission();
     delivered = true;
   }
   if (window.ReactNativeWebView?.postMessage) {

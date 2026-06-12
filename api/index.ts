@@ -5,7 +5,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "8mb" }));
 
 // Lazy helper to retrieve Google GenAI client
 let aiInstance: GoogleGenAI | null = null;
@@ -161,6 +161,87 @@ async function myMemoryTranslate(text: string, source: string = "en", target: st
     throw e;
   }
 }
+
+
+function normalizeBase64Audio(audioBase64: string): string {
+  const marker = "base64,";
+  const markerIndex = audioBase64.indexOf(marker);
+  return markerIndex >= 0 ? audioBase64.slice(markerIndex + marker.length) : audioBase64;
+}
+
+function extractAudioTranslation(json: any, fallbackTranscript = "") {
+  const transcript = String(json?.transcript || json?.english || fallbackTranscript || "").trim();
+  const arabic = String(json?.arabic || json?.translatedText || json?.translation || "").trim();
+  return {
+    transcript,
+    arabic: arabic || transcript || "لم يتم التقاط كلام واضح.",
+    confidence: typeof json?.confidence === "number" ? json.confidence : undefined,
+    source: "audio-playback"
+  };
+}
+
+// Native overlay audio translation API: Android captures the current app playback audio
+// via MediaProjection/AudioPlaybackCapture, sends a short WAV clip here, and receives
+// a concise Arabic translation suitable for immediate overlay display + TTS.
+app.post("/api/audio-translate", async (req, res) => {
+  try {
+    const { audioBase64, mimeType, sourceLang, targetLang, captureMs } = req.body;
+    if (!audioBase64 || typeof audioBase64 !== "string") {
+      return res.status(400).json({ error: "audioBase64 is required" });
+    }
+
+    const cleanAudio = normalizeBase64Audio(audioBase64);
+    if (cleanAudio.length < 400) {
+      return res.status(400).json({ error: "Audio clip is too small" });
+    }
+
+    const source = sourceLang || "English";
+    const target = targetLang || "Arabic";
+    const prompt = `You are LingoLens live overlay translator. Listen to this short audio clip captured from another app, transcribe the spoken ${source}, then translate it into natural ${target} for an Arabic-speaking learner.
+Return concise JSON only. If there is no clear speech, set transcript to an empty string and arabic to "لم يتم التقاط كلام واضح".
+Capture length: ${captureMs || 5000} ms.
+Required keys: transcript, arabic, confidence.`;
+
+    const schemaConfig = {
+      type: Type.OBJECT,
+      properties: {
+        transcript: { type: Type.STRING },
+        arabic: { type: Type.STRING },
+        confidence: { type: Type.NUMBER }
+      },
+      required: ["transcript", "arabic", "confidence"]
+    };
+
+    const ai = getAiClient();
+    const response = await withTimeout(ai.models.generateContent({
+      model: GEMINI_FAST_MODEL,
+      contents: [{
+        role: "user",
+        parts: [
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType: mimeType || "audio/wav",
+              data: cleanAudio
+            }
+          }
+        ]
+      }],
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: schemaConfig,
+        temperature: 0.05
+      }
+    } as any), Number(process.env.GEMINI_AUDIO_TIMEOUT_MS || 14000), "Gemini audio translation");
+
+    const resultText = response.text;
+    if (!resultText) throw new Error("Empty audio translation response");
+    res.json(extractAudioTranslation(JSON.parse(resultText.trim())));
+  } catch (err: any) {
+    console.error("Audio translation server-side error: ", err);
+    res.status(500).json({ error: err.message || "Failed to process audio translation" });
+  }
+});
 
 // Real-time Translate API
 app.post("/api/translate", async (req, res) => {

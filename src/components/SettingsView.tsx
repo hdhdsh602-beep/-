@@ -283,7 +283,7 @@ export default function SettingsView({ settings, onSettingsChange, onOpenOffline
             <div className="flex items-center justify-between p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100">
               <div className="flex flex-col gap-0.5">
                 <span className="text-xs font-bold text-stone-700">ترجمة الشاشة من الفقاعة العائمة</span>
-                <span className="text-[10px] text-stone-500 leading-relaxed">في الويب تظهر فقاعة داخل التطبيق لترجمة النص المنسوخ. في Android الأصلي يلزم منح إذن الظهور فوق التطبيقات وتصوير الشاشة حتى تعمل فوق كل التطبيقات.</span>
+                <span className="text-[10px] text-stone-500 leading-relaxed">في Android الأصلي تبقى الفقاعة فوق كل التطبيقات: ضغطة واحدة تسمع صوت التطبيق مثل TikTok وتترجمه، وضغطة مطولة/مزدوجة تقرأ نص الشاشة. يلزم إذن الظهور فوق التطبيقات والتقاط الشاشة/الصوت.</span>
               </div>
               <button
                 type="button"
