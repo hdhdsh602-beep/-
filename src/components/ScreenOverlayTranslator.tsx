@@ -13,7 +13,7 @@ export default function ScreenOverlayTranslator({ enabled, autoSpeak, ttsPitch, 
   const [isOpen, setIsOpen] = useState(false);
   const [inputText, setInputText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
-  const [status, setStatus] = useState('جاهز لترجمة النص المنسوخ من أي شاشة.');
+  const [status, setStatus] = useState('جاهز. في Android: اضغط الفقاعة لسماع صوت التطبيق وترجمته.');
   const [isTranslating, setIsTranslating] = useState(false);
   const [position, setPosition] = useState(() => ({ x: 18, y: Math.max(120, window.innerHeight - 190) }));
   const dragRef = useRef<{ dragging: boolean; x: number; y: number }>({ dragging: false, x: 0, y: 0 });
@@ -108,7 +108,7 @@ export default function ScreenOverlayTranslator({ enabled, autoSpeak, ttsPitch, 
             </button>
           </div>
           <div className="p-3 space-y-3">
-            <p className="text-[11px] text-stone-500 font-bold leading-relaxed">داخل المتصفح: انسخ أي نص من الشاشة ثم اضغط ترجمة الحافظة. داخل تطبيق Android الأصلي: نفس التفعيل يشغل الفقاعة فوق كل التطبيقات.</p>
+            <p className="text-[11px] text-stone-500 font-bold leading-relaxed">داخل المتصفح: انسخ النص ثم ترجم الحافظة. داخل Android الأصلي: الفقاعة تظهر فوق كل التطبيقات؛ ضغطة واحدة تسمع صوت الفيديو وتترجمه، وضغطة مطولة/مزدوجة تقرأ نص الشاشة.</p>
             <textarea
               value={inputText}
               onChange={(event) => setInputText(event.target.value)}

@@ -1,7 +1,5 @@
-const CACHE_NAME = 'linguacam-cache-v3';
-const CORE_ASSETS = [
-  '/',
-  '/index.html',
+const CACHE_NAME = 'linguacam-cache-v4';
+const OFFLINE_ASSETS = [
   '/manifest.json',
   '/icon.svg',
   '/icon-512.png'
@@ -9,8 +7,8 @@ const CORE_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS).catch((err) => {
-      console.warn('Initial cache preload completed with some dynamic warnings:', err);
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(OFFLINE_ASSETS).catch((err) => {
+      console.warn('Offline asset preload completed with warnings:', err);
     }))
   );
   self.skipWaiting();
@@ -24,41 +22,58 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+const isSameOrigin = (request) => request.url.startsWith(self.location.origin);
+
+const isAppShellRequest = (request) => {
+  const url = new URL(request.url);
+  return request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/sw.js';
+};
+
+const isImmutableAsset = (request) => {
+  const url = new URL(request.url);
+  return url.pathname.startsWith('/assets/') || /\.(?:png|jpg|jpeg|svg|webp|gif|ico|woff2?)$/i.test(url.pathname);
+};
+
 const putInCache = async (request, response) => {
-  if (!response || response.status !== 200 || !request.url.startsWith(self.location.origin)) return;
+  if (!response || response.status !== 200 || !isSameOrigin(request)) return;
   const cache = await caches.open(CACHE_NAME);
   await cache.put(request, response.clone());
 };
 
-const networkFirst = async (request) => {
+const fetchFreshAppShell = async (request) => {
   try {
     const response = await fetch(request, { cache: 'no-store' });
-    await putInCache(request, response);
+    if (request.mode === 'navigate' || new URL(request.url).pathname === '/index.html') {
+      await putInCache(new Request('/index.html'), response);
+    }
     return response;
   } catch (err) {
-    return (await caches.match(request)) || caches.match('/');
+    return (await caches.match('/index.html')) || caches.match(request);
   }
 };
 
-const staleWhileRevalidate = async (request) => {
+const cacheFirstAsset = async (request) => {
   const cached = await caches.match(request);
-  const networkPromise = fetch(request).then(async (response) => {
-    await putInCache(request, response);
-    return response;
-  }).catch(() => caches.match('/'));
-
   if (cached) return cached;
-  return (await networkPromise) || caches.match('/');
+
+  const response = await fetch(request);
+  await putInCache(request, response);
+  return response;
 };
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  if (request.method !== 'GET' || request.url.includes('/api/')) return;
+  if (request.method !== 'GET' || !isSameOrigin(request) || request.url.includes('/api/')) return;
 
-  if (request.mode === 'navigate') {
-    event.respondWith(networkFirst(request));
+  if (isAppShellRequest(request)) {
+    event.respondWith(fetchFreshAppShell(request));
     return;
   }
 
-  event.respondWith(staleWhileRevalidate(request));
+  if (isImmutableAsset(request)) {
+    event.respondWith(cacheFirstAsset(request));
+    return;
+  }
+
+  event.respondWith(fetch(request, { cache: 'no-store' }));
 });

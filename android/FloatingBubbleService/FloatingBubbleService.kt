@@ -14,6 +14,10 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioRecord
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -25,6 +29,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.speech.tts.TextToSpeech
+import android.util.Base64
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -51,6 +57,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.math.abs
 
@@ -66,9 +73,12 @@ class FloatingBubbleService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var screenJob: Job? = null
+    private var audioJob: Job? = null
     private var singleTapJob: Job? = null
+    private var textToSpeech: TextToSpeech? = null
 
     private var lastScreenCaptureAt = 0L
+    private var lastAudioCaptureAt = 0L
     private var lastTapAt = 0L
     private var downAt = 0L
     private var downX = 0f
@@ -80,6 +90,11 @@ class FloatingBubbleService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         startForeground(NOTIFICATION_ID, buildNotification())
+        textToSpeech = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                textToSpeech?.language = Locale("ar")
+            }
+        }
         showFloatingBubble()
     }
 
@@ -107,9 +122,11 @@ class FloatingBubbleService : Service() {
                 }
             }
             ACTION_SET_AUDIO_TRANSLATION_ENABLED -> {
+                val enabled = incoming.getBooleanExtra(EXTRA_ENABLED, true)
                 prefs.edit()
-                    .putBoolean(KEY_AUDIO_TRANSLATION_ENABLED, incoming.getBooleanExtra(EXTRA_ENABLED, true))
+                    .putBoolean(KEY_AUDIO_TRANSLATION_ENABLED, enabled)
                     .apply()
+                if (enabled) showFloatingBubble()
             }
             ACTION_SET_TRANSLATION_ENDPOINT -> {
                 prefs.edit()
@@ -127,9 +144,13 @@ class FloatingBubbleService : Service() {
     override fun onDestroy() {
         singleTapJob?.cancel()
         screenJob?.cancel()
+        audioJob?.cancel()
         removeBubble()
         dismissTranslationOverlay()
         releaseProjectionResources()
+        textToSpeech?.stop()
+        textToSpeech?.shutdown()
+        textToSpeech = null
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -147,8 +168,11 @@ class FloatingBubbleService : Service() {
             val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection?.stop()
             mediaProjection = manager.getMediaProjection(resultCode, resultData)
-            prefs.edit().putBoolean(KEY_SCREEN_TRANSLATION_ENABLED, true).apply()
-            showCenterOverlay("تم تفعيل ترجمة الشاشة")
+            prefs.edit()
+                .putBoolean(KEY_SCREEN_TRANSLATION_ENABLED, true)
+                .putBoolean(KEY_AUDIO_TRANSLATION_ENABLED, true)
+                .apply()
+            showCenterOverlay("تم تفعيل الفقاعة للصوت والشاشة")
         }
     }
 
@@ -250,11 +274,185 @@ class FloatingBubbleService : Service() {
             return
         }
 
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            showCenterOverlay("ترجمة صوت التطبيقات تحتاج Android 10 أو أحدث")
+            return
+        }
+
+        if (mediaProjection == null) {
+            showCenterOverlay("اسمح بالتقاط الشاشة والصوت أولاً")
+            return
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastAudioCaptureAt < AUDIO_CAPTURE_COOLDOWN_MS) return
+        lastAudioCaptureAt = now
+
+        audioJob?.cancel()
+        audioJob = serviceScope.launch {
+            showCenterOverlay("أسمع الصوت الجاري...")
+            val result = capturePlaybackAudioAndTranslate()
+            showCenterOverlay(result.displayText())
+            speakArabic(result.arabicText)
+        }
+
         sendBroadcast(
             Intent(ACTION_AUDIO_TRANSLATION_REQUESTED)
                 .setPackage(packageName)
                 .putExtra(EXTRA_AUDIO_CAPTURE_MS, AUDIO_CAPTURE_MS)
         )
+    }
+
+    private suspend fun capturePlaybackAudioAndTranslate(): AudioTranslationResult = withContext(Dispatchers.IO) {
+        val projection = mediaProjection ?: return@withContext AudioTranslationResult("اسمح بالتقاط الشاشة والصوت أولاً")
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return@withContext AudioTranslationResult("ترجمة صوت التطبيقات تحتاج Android 10 أو أحدث")
+        }
+
+        val sampleRate = AUDIO_SAMPLE_RATE
+        val minBuffer = AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        ).coerceAtLeast(sampleRate * 2)
+
+        val config = AudioPlaybackCaptureConfiguration.Builder(projection)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_GAME)
+            .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+            .build()
+
+        val format = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(sampleRate)
+            .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+            .build()
+
+        val recorder = AudioRecord.Builder()
+            .setAudioPlaybackCaptureConfig(config)
+            .setAudioFormat(format)
+            .setBufferSizeInBytes(minBuffer)
+            .build()
+
+        try {
+            recorder.startRecording()
+            val pcm = ByteArray(AUDIO_CAPTURE_BYTES)
+            val chunk = ByteArray(minBuffer.coerceAtMost(4096))
+            var offset = 0
+            val endAt = SystemClock.elapsedRealtime() + AUDIO_CAPTURE_MS
+            while (SystemClock.elapsedRealtime() < endAt && offset < pcm.size) {
+                val read = recorder.read(chunk, 0, minOf(chunk.size, pcm.size - offset))
+                if (read > 0) {
+                    chunk.copyInto(pcm, offset, 0, read)
+                    offset += read
+                }
+            }
+
+            if (offset < MIN_AUDIO_BYTES) return@withContext AudioTranslationResult("لم يتم التقاط صوت واضح")
+            val capturedPcm = pcm.copyOf(offset)
+            if (!capturedPcm.hasAudibleSignal()) return@withContext AudioTranslationResult("الصوت منخفض أو التطبيق يمنع التقاطه")
+            val wavBytes = capturedPcm.toWav(sampleRate)
+            translateAudioClip(Base64.encodeToString(wavBytes, Base64.NO_WRAP), "audio/wav")
+        } catch (error: Throwable) {
+            AudioTranslationResult("تعذر سماع صوت التطبيق الآن")
+        } finally {
+            runCatching { recorder.stop() }
+            recorder.release()
+        }
+    }
+
+    private suspend fun translateAudioClip(audioBase64: String, mimeType: String): AudioTranslationResult = withContext(Dispatchers.IO) {
+        val endpoint = prefs.getString(KEY_TRANSLATION_ENDPOINT, DEFAULT_TRANSLATION_ENDPOINT).orEmpty()
+        val audioEndpoint = endpoint.replace(Regex("/translate/?$"), "/audio-translate")
+        val payload = JSONObject()
+            .put("audioBase64", audioBase64)
+            .put("mimeType", mimeType)
+            .put("sourceLang", "English")
+            .put("targetLang", "Arabic")
+            .put("captureMs", AUDIO_CAPTURE_MS)
+            .toString()
+
+        val connection = (URL(audioEndpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = AUDIO_NETWORK_TIMEOUT_MS.toInt()
+            readTimeout = AUDIO_NETWORK_TIMEOUT_MS.toInt()
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            prefs.getString(KEY_TRANSLATION_AUTH_TOKEN, "")
+                ?.takeIf { it.isNotBlank() }
+                ?.let { setRequestProperty("Authorization", "Bearer $it") }
+        }
+
+        try {
+            connection.outputStream.use { output -> output.write(payload.toByteArray(StandardCharsets.UTF_8)) }
+            val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (connection.responseCode !in 200..299) return@withContext AudioTranslationResult("تعذر الاتصال بمحرك ترجمة الصوت")
+
+            val json = JSONObject(body)
+            AudioTranslationResult(
+                arabicText = json.optString("arabic").ifBlank { "لم يتم التقاط كلام واضح" },
+                transcript = json.optString("transcript")
+            )
+        } catch (error: Throwable) {
+            AudioTranslationResult("تعذر ترجمة الصوت الآن")
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun ByteArray.hasAudibleSignal(): Boolean {
+        if (size < 2) return false
+        var sum = 0.0
+        var samples = 0
+        var index = 0
+        while (index + 1 < size) {
+            val value = (this[index].toInt() and 0xff) or (this[index + 1].toInt() shl 8)
+            val signed = value.toShort().toInt()
+            sum += signed * signed.toDouble()
+            samples++
+            index += 2
+        }
+        if (samples == 0) return false
+        val rms = kotlin.math.sqrt(sum / samples)
+        return rms >= MIN_AUDIO_RMS
+    }
+
+    private fun ByteArray.toWav(sampleRate: Int): ByteArray {
+        val dataSize = size
+        val totalSize = dataSize + 36
+        val header = ByteArray(44)
+        fun writeString(offset: Int, value: String) = value.forEachIndexed { index, char -> header[offset + index] = char.code.toByte() }
+        fun writeInt(offset: Int, value: Int) {
+            header[offset] = (value and 0xff).toByte()
+            header[offset + 1] = ((value shr 8) and 0xff).toByte()
+            header[offset + 2] = ((value shr 16) and 0xff).toByte()
+            header[offset + 3] = ((value shr 24) and 0xff).toByte()
+        }
+        fun writeShort(offset: Int, value: Int) {
+            header[offset] = (value and 0xff).toByte()
+            header[offset + 1] = ((value shr 8) and 0xff).toByte()
+        }
+
+        writeString(0, "RIFF")
+        writeInt(4, totalSize)
+        writeString(8, "WAVE")
+        writeString(12, "fmt ")
+        writeInt(16, 16)
+        writeShort(20, 1)
+        writeShort(22, 1)
+        writeInt(24, sampleRate)
+        writeInt(28, sampleRate * 2)
+        writeShort(32, 2)
+        writeShort(34, 16)
+        writeString(36, "data")
+        writeInt(40, dataSize)
+        return header + this
+    }
+
+    private fun speakArabic(text: String) {
+        if (text.isBlank()) return
+        textToSpeech?.speak(text.take(MAX_TTS_CHARS), TextToSpeech.QUEUE_FLUSH, null, "lingolens-audio-translation")
     }
 
     private fun triggerScreenTranslation() {
@@ -522,8 +720,9 @@ class FloatingBubbleService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("LingoLens Bubble")
-            .setContentText("Single tap: audio. Long/double tap: screen translation.")
+            .setContentText("Tap to translate current app audio. Long/double tap reads screen text.")
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopIntent)
             .build()
     }
@@ -546,6 +745,17 @@ class FloatingBubbleService : Service() {
         val arabicText: String,
         val bounds: Rect? = null
     )
+
+    private data class AudioTranslationResult(
+        val arabicText: String,
+        val transcript: String = ""
+    ) {
+        fun displayText(): String = if (transcript.isBlank()) {
+            arabicText
+        } else {
+            "$arabicText\n\n$transcript"
+        }
+    }
 
     companion object {
         const val ACTION_SET_MEDIA_PROJECTION = "com.lingolens.overlay.SET_MEDIA_PROJECTION"
@@ -575,10 +785,17 @@ class FloatingBubbleService : Service() {
         private const val DOUBLE_TAP_MS = 260L
         private const val DRAG_SLOP = 12
         private const val AUDIO_CAPTURE_MS = 5_000
+        private const val AUDIO_CAPTURE_COOLDOWN_MS = 900L
+        private const val AUDIO_SAMPLE_RATE = 16_000
+        private const val AUDIO_CAPTURE_BYTES = AUDIO_SAMPLE_RATE * 2 * AUDIO_CAPTURE_MS / 1_000
+        private const val MIN_AUDIO_BYTES = AUDIO_SAMPLE_RATE
+        private const val MIN_AUDIO_RMS = 180.0
         private const val SCREEN_CAPTURE_COOLDOWN_MS = 1_500L
         private const val SCREENSHOT_TIMEOUT_MS = 1_200L
         private const val NETWORK_TIMEOUT_MS = 8_000L
+        private const val AUDIO_NETWORK_TIMEOUT_MS = 16_000L
         private const val MAX_OCR_CHARS = 1_600
         private const val MAX_TRANSLATION_CHARS = 1_200
+        private const val MAX_TTS_CHARS = 500
     }
 }

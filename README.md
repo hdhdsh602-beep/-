@@ -39,7 +39,7 @@ npm run build
 
 - **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS
 - **Backend:** Express.js + TypeScript
-- **AI:** Google Gemini AI
+- **AI:** Google Gemini AI (`gemini-3.1-flash-lite` افتراضياً للترجمة السريعة)
 - **Database:** Firebase (Auth + Firestore)
 - **Animations:** Motion + Lucide Icons
 
@@ -47,4 +47,5 @@ npm run build
 
 - Node.js 18+
 - مفتاح Gemini API (مجاني من Google AI Studio)
+- يمكن تغيير نموذج السرعة من `.env` عبر `GEMINI_MODEL` أو `GEMINI_AUDIO_MODEL`
 - Firebase project (اختياري للتخزين السحابي)
